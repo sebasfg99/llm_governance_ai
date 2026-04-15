@@ -76,6 +76,8 @@ class Document(BaseModel):
     file_type: FileType         # "pdf" or "docx"
     file_path: str              # Absolute or relative path to the file on disk
     status: DocumentStatus      # Current processing state
+    country: str | None = None  # Country this document applies to (normalized slug, e.g. "costa-rica")
+                                # None means the document is global (applies to all countries)
 
     error_message: str | None = None    # Set if processing failed
     page_count: int | None = None       # Populated after successful processing
@@ -110,6 +112,7 @@ class DocumentChunk(BaseModel):
     tenant_id: str              # Denormalized for fast queries (avoids JOINs)
     content: str                # The actual text of this chunk
     chunk_index: int            # Position within the document (0-based)
+    country: str | None = None  # Propagated from parent document
 
     # The embedding is a list of floats (1536 dimensions)
     # It's None when the chunk is first created and populated
@@ -134,3 +137,4 @@ class CreateDocumentRequest(BaseModel):
     filename: str
     file_type: FileType
     file_path: str
+    country: str | None = None

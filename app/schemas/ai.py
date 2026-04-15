@@ -52,6 +52,15 @@ class AIQueryRequest(BaseModel):
         description="Response format: 'text' for prose, 'structured' for JSON-like output",
     )
 
+    # Country filter for RAG retrieval (normalized slug, e.g. "costa-rica", "panama")
+    # If provided: returns chunks from this country + global chunks (country IS NULL)
+    # If omitted: returns only global chunks (country IS NULL)
+    country: str | None = Field(
+        default=None,
+        description="Country filter (e.g. 'costa-rica', 'panama'). If omitted, only global documents are searched.",
+        example="costa-rica",
+    )
+
 
 class RetrievedChunkInfo(BaseModel):
     """Summary of a retrieved chunk included in the AI response metadata."""

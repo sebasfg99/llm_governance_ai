@@ -88,6 +88,8 @@ CREATE TABLE IF NOT EXISTS documents (
     file_path       TEXT NOT NULL,              -- Path on disk: uploads/{tenant_id}/{filename}
     status          TEXT NOT NULL DEFAULT 'pending',
                                                 -- pending | processing | ready | failed
+    country         TEXT,                       -- Country slug this doc applies to (e.g. "costa-rica")
+                                                -- NULL means global (applies to all countries)
     error_message   TEXT,                       -- Set if status = 'failed'; stores the error
     page_count      INTEGER,                    -- Number of pages (populated after processing)
     chunk_count     INTEGER,                    -- Number of chunks produced (populated after processing)
@@ -129,6 +131,8 @@ CREATE TABLE IF NOT EXISTS document_chunks (
     tenant_id       TEXT NOT NULL,              -- Denormalized from document for faster queries
     content         TEXT NOT NULL,              -- The actual text of this chunk
     chunk_index     INTEGER NOT NULL,           -- Position within the document (0-based)
+    country         TEXT,                       -- Propagated from parent document
+                                                -- NULL = global, slug = country-specific
     embedding       vector(1536),               -- 1536-dim vector from text-embedding-3-small
                                                 -- NULL until embeddings are generated
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -400,7 +404,8 @@ COMMENT ON FUNCTION match_chunks IS 'Vector similarity search for RAG retrieval.
 -- ============================================================
 CREATE OR REPLACE FUNCTION match_global_chunks(
     query_embedding  vector(1536),
-    match_count      INT DEFAULT 3  -- Fewer global chunks than tenant chunks by default
+    match_count      INT DEFAULT 3,  -- Fewer global chunks than tenant chunks by default
+    match_country    TEXT DEFAULT NULL
 )
 RETURNS TABLE (
     id              UUID,
@@ -425,9 +430,18 @@ AS $$
         -- 'global' is the reserved tenant_id for the shared library
         dc.tenant_id = 'global'
         AND dc.embedding IS NOT NULL
+        -- Country filter:
+        --   match_country IS NULL → only global docs (country IS NULL)
+        --   match_country = 'x'  → country-specific + global docs
+        AND (
+            CASE
+                WHEN match_country IS NULL THEN dc.country IS NULL
+                ELSE (dc.country = match_country OR dc.country IS NULL)
+            END
+        )
     ORDER BY
         dc.embedding <=> query_embedding
     LIMIT match_count;
 $$;
 
-COMMENT ON FUNCTION match_global_chunks IS 'Vector similarity search over the global shared knowledge library.';
+COMMENT ON FUNCTION match_global_chunks IS 'Vector similarity search over the global shared knowledge library, with optional country filter.';

@@ -81,6 +81,7 @@ class DocumentService:
         tenant_id: str,
         filename: str,
         file_bytes: bytes,
+        country: str | None = None,
     ) -> Document:
         """
         Save an uploaded file to disk and create its database record.
@@ -92,6 +93,8 @@ class DocumentService:
             tenant_id: The tenant that owns this document.
             filename:  The original filename (e.g., "contract.pdf").
             file_bytes: The raw file content as bytes.
+            country:   Normalized country slug this document applies to
+                       (e.g. "costa-rica"). None means global (all countries).
 
         Returns:
             The newly created Document record with status="pending".
@@ -99,7 +102,7 @@ class DocumentService:
         Raises:
             DocumentProcessingError: If the file type is not supported.
         """
-        logger.info(f"Uploading document: {filename} for tenant: {tenant_id}")
+        logger.info(f"Uploading document: {filename} for tenant: {tenant_id}, country: {country}")
 
         # --- Determine file type from extension ---
         # We only support PDF and DOCX in the MVP
@@ -142,6 +145,7 @@ class DocumentService:
             "file_type": file_type.value,   # "pdf" or "docx"
             "file_path": file_path,         # Full path on disk
             "status": DocumentStatus.PENDING.value,
+            "country": country,             # None = global, slug = country-specific
             "created_at": now,
         }
 
@@ -240,6 +244,7 @@ class DocumentService:
                     "content": chunk_text_item,
                     "chunk_index": idx,
                     "embedding": embedding,  # List of 1536 floats
+                    "country": doc.country,  # Propagated from parent document
                     "created_at": now,
                 }
                 for idx, (chunk_text_item, embedding) in enumerate(

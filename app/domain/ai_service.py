@@ -136,6 +136,7 @@ class AIService:
             query=request.query,
             top_k=request.top_k,
             include_global=request.include_global,
+            country=request.country,
         )
 
         logger.debug(f"Retrieved {len(retrieved_chunks)} context chunks")

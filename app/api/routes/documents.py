@@ -2,7 +2,7 @@
 # app/api/routes/documents.py — Document management endpoints
 # ============================================================
 
-from fastapi import APIRouter, Depends, UploadFile, File
+from fastapi import APIRouter, Depends, UploadFile, File, Form
 from supabase import Client
 
 from app.api.deps import get_current_user, get_db
@@ -29,6 +29,7 @@ MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
 )
 async def upload_document(
     file: UploadFile = File(..., description="PDF or DOCX file to upload"),
+    country: str | None = Form(default=None, description="Country this document applies to (e.g. 'costa-rica'). Omit for global documents."),
     current_user: dict = Depends(get_current_user),
     db: Client = Depends(get_db),
 ) -> DocumentUploadResponse:
@@ -48,6 +49,7 @@ async def upload_document(
         tenant_id=current_user["tenant_id"],
         filename=file.filename or "untitled",
         file_bytes=file_bytes,
+        country=country,
     )
 
     return DocumentUploadResponse(
@@ -56,6 +58,7 @@ async def upload_document(
         filename=doc.filename,
         file_type=doc.file_type.value,
         status=doc.status.value,
+        country=doc.country,
         created_at=doc.created_at,
     )
 
@@ -114,6 +117,7 @@ def list_documents(
                 filename=d.filename,
                 file_type=d.file_type.value,
                 status=d.status.value,
+                country=d.country,
                 error_message=d.error_message,
                 page_count=d.page_count,
                 chunk_count=d.chunk_count,
@@ -150,6 +154,7 @@ def get_document(
         filename=doc.filename,
         file_type=doc.file_type.value,
         status=doc.status.value,
+        country=doc.country,
         error_message=doc.error_message,
         page_count=doc.page_count,
         chunk_count=doc.chunk_count,

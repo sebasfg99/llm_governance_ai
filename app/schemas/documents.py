@@ -14,6 +14,7 @@ class DocumentUploadResponse(BaseModel):
     filename: str
     file_type: str
     status: str
+    country: str | None = None
     created_at: datetime
     message: str = "Document uploaded. Call /documents/{id}/process to start processing."
 
@@ -25,6 +26,7 @@ class DocumentResponse(BaseModel):
     filename: str
     file_type: str
     status: str
+    country: str | None = None
     error_message: str | None = None
     page_count: int | None = None
     chunk_count: int | None = None

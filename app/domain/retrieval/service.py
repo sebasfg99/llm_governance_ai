@@ -67,6 +67,7 @@ class RetrievalService:
         query: str,
         top_k: int | None = None,
         include_global: bool = True,
+        country: str | None = None,
     ) -> list[ChunkResult]:
         """
         Find the most relevant document chunks for a user query.
@@ -85,6 +86,9 @@ class RetrievalService:
                             Defaults to settings.retrieval_top_k (5).
             include_global: If True, also search the global shared library
                             and merge results. Default: True.
+            country:        Country filter (e.g. "costa-rica"). If provided,
+                            returns chunks from that country + global chunks
+                            (country IS NULL). If None, returns only global chunks.
 
         Returns:
             List of ChunkResult objects, ordered by relevance (most relevant first).
@@ -97,7 +101,7 @@ class RetrievalService:
 
         logger.info(
             f"Retrieving top-{top_k} chunks for tenant={tenant_id}, "
-            f"query='{query[:80]}...'"
+            f"country={country}, query='{query[:80]}...'"
         )
 
         # --- Step 1: Embed the query ---
@@ -122,6 +126,7 @@ class RetrievalService:
             global_chunks = self._search_global_chunks(
                 query_embedding=query_embedding,
                 top_k=global_top_k,
+                country=country,
             )
             logger.debug(f"Retrieved {len(global_chunks)} global library chunks")
 
@@ -203,6 +208,7 @@ class RetrievalService:
         self,
         query_embedding: list[float],
         top_k: int,
+        country: str | None = None,
     ) -> list[ChunkResult]:
         """
         Call the match_global_chunks Postgres RPC for the shared library.
@@ -210,6 +216,9 @@ class RetrievalService:
         Args:
             query_embedding: The vectorized query.
             top_k:           Number of global chunks to return.
+            country:         Country filter. If provided, returns chunks from
+                             that country + global chunks (country IS NULL).
+                             If None, returns only global chunks (country IS NULL).
 
         Returns:
             List of ChunkResult objects from the global library.
@@ -220,6 +229,7 @@ class RetrievalService:
                 {
                     "query_embedding": query_embedding,
                     "match_count": top_k,
+                    "match_country": country,
                 }
             ).execute()
 
