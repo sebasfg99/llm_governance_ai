@@ -233,6 +233,7 @@ class AIService:
                 trace_id=trace_id,
                 response_text=llm_response.text,
                 chunk_texts=[c.content for c in retrieved_chunks],
+                response_mode=request.response_mode,
             )
         except Exception as e:
             # Eval failure is logged but never blocks the response
@@ -309,21 +310,30 @@ class AIService:
         else:
             # No documents available — tell the LLM explicitly
             parts.append(
-                "\n\nNote: No relevant documents were found in the knowledge base. "
-                "Answer based on your general knowledge, but be transparent about "
-                "the lack of document context."
+                "\n\nNota: No se encontraron documentos relevantes en la base de conocimiento. "
+                "Aplica el GROUNDING CONTRACT: responde solo si puedes hacerlo sin usar "
+                "conocimiento de entrenamiento."
             )
 
         # Add response format instruction for structured mode
         if response_mode == "structured":
             parts.append(
-                "\n\nIMPORTANT: Structure your response as JSON with these keys:\n"
+                "\n\nOUTPUT FORMAT: Respond with valid JSON only. No text before or after.\n\n"
                 "{\n"
-                '  "summary": "1-2 sentence summary",\n'
-                '  "key_points": ["point 1", "point 2"],\n'
-                '  "risks": ["risk 1", "risk 2"],  // if applicable\n'
-                '  "confidence": "high|medium|low"\n'
-                "}"
+                '  "summary": "<string: 1-2 sentences summarizing the answer>",\n'
+                '  "key_points": ["<string>"],\n'
+                '  "risks": ["<string>"],\n'
+                '  "has_risks": false,\n'
+                '  "confidence": "<string: high | medium | low>"\n'
+                "}\n\n"
+                "Rules:\n"
+                '- "risks": always include this key; use [] if no risks are identified.\n'
+                '- "has_risks": true if risks array is non-empty, false otherwise.\n'
+                '- "confidence": "high" = context directly and completely answers; '
+                '"medium" = partially; "low" = requires inference.\n'
+                "- No JSON comments. No trailing commas. No markdown code fences.\n"
+                '- If unable to produce valid JSON, output: '
+                '{"error": "Unable to structure response", "raw": "<plain text answer>"}'
             )
 
         # Add the user's question

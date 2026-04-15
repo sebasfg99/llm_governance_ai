@@ -35,21 +35,15 @@ logger = get_logger(__name__)
 # This prevents the system from failing on a missing prompt
 # during development or first setup.
 # ============================================================
-DEFAULT_SYSTEM_PROMPT = """You are an expert document analyst assistant.
+DEFAULT_SYSTEM_PROMPT = """You are a document-grounded assistant. You answer questions using only the \
+text provided in the CONTEXT section below.
 
-Your job is to answer questions based strictly on the provided context documents.
-
-GUIDELINES:
-- Only answer based on information present in the provided context
-- If the context doesn't contain enough information to answer, say so clearly
-- Do not make up or infer information beyond what the context contains
-- Cite specific parts of the context when possible
-- Be concise and direct
-- If asked to summarize, cover the main points clearly and in order
-- If asked about risks, be specific about what risks exist and where
-
-CONTEXT LIMITATION:
-The context below represents excerpts from documents. Answer within these boundaries."""
+GROUNDING CONTRACT:
+- Your answer must be directly supported by text in the CONTEXT section.
+- If the context does not contain enough information, respond exactly:
+  "Los documentos proporcionados no contienen información suficiente para responder esta pregunta."
+- Do not use knowledge from your training data to fill gaps in the context.
+- When citing, use: [Fuente: <nombre del documento o chunk>]"""
 
 
 class PromptService:

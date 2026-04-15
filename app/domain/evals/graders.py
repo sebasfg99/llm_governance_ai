@@ -31,6 +31,7 @@
 # TODO: Add factual consistency check against retrieved chunks
 # ============================================================
 
+import json
 import re
 from app.core.logging import get_logger
 
@@ -165,12 +166,15 @@ def has_citations(response_text: str) -> bool:
     # Numbered citation patterns: [1], [1,2], [1][2]
     numbered_citation = re.search(r"\[\d+(?:,\s*\d+)*\]", response_text)
 
-    # Explicit source labels
+    # Explicit source labels (English and Spanish)
     source_label = re.search(
-        r"\b(source|sources|reference|references):",
+        r"\b(source|sources|reference|references|fuente|fuentes):",
         response_text,
         re.IGNORECASE,
     )
+
+    # Spanish inline citation format: [Fuente: ...]
+    fuente_citation = re.search(r"\[Fuente:", response_text, re.IGNORECASE)
 
     # Attribution phrases
     attribution_phrase = re.search(
@@ -179,6 +183,37 @@ def has_citations(response_text: str) -> bool:
         re.IGNORECASE,
     )
 
-    result = bool(numbered_citation or source_label or attribution_phrase)
+    result = bool(numbered_citation or source_label or fuente_citation or attribution_phrase)
     logger.debug(f"Citation check: {result}")
+    return result
+
+
+def json_valid(response_text: str) -> bool:
+    """
+    Check whether the response is parseable as valid JSON.
+
+    Used when response_mode="structured" is requested. A False result
+    means the model returned malformed JSON that will fail parsing in
+    downstream application code.
+
+    Args:
+        response_text: The LLM's generated response.
+
+    Returns:
+        True if the response can be parsed by json.loads().
+    """
+    text = response_text.strip()
+    # Strip markdown code fences if the model added them despite instructions
+    if text.startswith("```"):
+        lines = text.splitlines()
+        text = "\n".join(
+            line for line in lines
+            if not line.strip().startswith("```")
+        ).strip()
+    try:
+        json.loads(text)
+        result = True
+    except (json.JSONDecodeError, ValueError):
+        result = False
+    logger.debug(f"JSON validity check: {result}")
     return result

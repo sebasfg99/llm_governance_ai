@@ -11,13 +11,13 @@ from supabase import Client
 
 from app.core.logging import get_logger
 from app.core.errors import NotFoundError
-from app.domain.evals.graders import grounding_score, length_ok, has_citations
+from app.domain.evals.graders import grounding_score, json_valid, length_ok, has_citations
 
 logger = get_logger(__name__)
 
 # The minimum grounding score required to "pass" evaluation
-# 0.10 means at least 10% of response words appear in the context
-GROUNDING_THRESHOLD = 0.10
+# 0.15 is stricter than the original 0.10 — aligns with improved citation guidance
+GROUNDING_THRESHOLD = 0.15
 
 
 class Evaluation:
@@ -80,6 +80,7 @@ class EvalService:
         trace_id: str,
         response_text: str,
         chunk_texts: list[str],
+        response_mode: str = "text",
     ) -> Evaluation:
         """
         Run all heuristic graders and persist the evaluation.
@@ -98,13 +99,16 @@ class EvalService:
         g_score = grounding_score(response_text, chunk_texts)
         l_ok = length_ok(response_text)
         citations = has_citations(response_text)
+        j_valid = json_valid(response_text) if response_mode == "structured" else None
 
         # --- Overall pass/fail decision ---
         # A response passes if it:
         #   1. Has sufficient grounding in the context
         #   2. Is within an acceptable length
+        #   3. Produces valid JSON when structured mode was requested
         # Citations are NOT required to pass (informational only)
-        passed = g_score >= GROUNDING_THRESHOLD and l_ok
+        json_check = (j_valid is True) if j_valid is not None else True
+        passed = g_score >= GROUNDING_THRESHOLD and l_ok and json_check
 
         # Build a details dict for debugging and analysis
         grader_details = {
@@ -113,6 +117,7 @@ class EvalService:
             "word_count": len(response_text.split()),
             "length_ok": l_ok,
             "has_citations": citations,
+            "json_valid": j_valid,
         }
 
         logger.info(
