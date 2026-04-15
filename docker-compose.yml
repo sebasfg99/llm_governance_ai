@@ -1,0 +1,81 @@
+# ============================================================
+# docker-compose.yml — Local development environment
+#
+# WHY: Lets you run a full local Postgres database with the
+# pgvector extension enabled using a single command:
+#   docker compose up -d
+#
+# This mirrors what Supabase runs in production, so you can
+# develop and test without hitting the cloud database.
+#
+# SERVICES:
+#   - postgres: Postgres 16 with pgvector extension
+#   - api:      The FastAPI app (optional — can run with uvicorn too)
+#
+# USAGE:
+#   Start:   docker compose up -d
+#   Stop:    docker compose down
+#   Logs:    docker compose logs -f
+#   Reset:   docker compose down -v  (WARNING: deletes all data)
+# ============================================================
+
+version: "3.9"
+
+services:
+
+  # ----------------------------------------------------------
+  # postgres — local Postgres with pgvector extension
+  #
+  # We use the ankane/pgvector image because it pre-installs
+  # the pgvector extension on top of standard Postgres.
+  # The standard postgres image does NOT include pgvector.
+  # ----------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:pg16   # Postgres 16 + pgvector pre-installed
+    container_name: aicore_postgres
+    environment:
+      # These match the POSTGRES_* vars in your .env file
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-aicore}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"   # Expose to localhost for psql / DB tools
+    volumes:
+      - postgres_data:/var/lib/postgresql/data   # Persist data between restarts
+    healthcheck:
+      # Docker will mark this container as "healthy" only when Postgres is ready
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ----------------------------------------------------------
+  # api — the FastAPI application
+  #
+  # Depends on postgres being healthy before starting.
+  # You can also skip this service and run uvicorn manually:
+  #   uvicorn app.main:app --reload
+  #
+  # Uncomment this service when you want a fully containerized
+  # local environment (e.g., for team onboarding or CI).
+  # ----------------------------------------------------------
+  # api:
+  #   build: .
+  #   container_name: aicore_api
+  #   ports:
+  #     - "8000:8000"
+  #   env_file:
+  #     - .env
+  #   volumes:
+  #     - ./uploads:/app/uploads     # Mount local uploads so files persist
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+# ----------------------------------------------------------
+# Named volumes — data persists across docker compose restarts
+# Run "docker compose down -v" to wipe everything and start fresh
+# ----------------------------------------------------------
+volumes:
+  postgres_data:

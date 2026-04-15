@@ -1,0 +1,39 @@
+# ============================================================
+# requirements.txt — Python dependencies for ai-core
+#
+# Why pinned loosely: We use >= to allow patch updates
+# while keeping the major API stable. Pin exactly in
+# production by running: pip freeze > requirements.lock
+# ============================================================
+
+# --- Web framework ---
+fastapi>=0.111.0          # Modern async-ready Python web framework
+uvicorn[standard]>=0.29.0  # ASGI server to run FastAPI; [standard] adds websockets + reload
+
+# --- Configuration ---
+pydantic-settings>=2.2.0  # Reads config from .env files into typed Python objects
+python-dotenv>=1.0.0      # Loads .env file into environment variables
+
+# --- Supabase / Database ---
+supabase>=2.4.0           # Official Supabase Python client (wraps PostgREST + Auth + Storage)
+
+# --- LLM providers ---
+openai>=1.30.0            # OpenAI Python SDK (GPT models + embeddings)
+google-generativeai>=0.5.0  # Google Gemini SDK
+
+# --- Document parsing ---
+pypdf>=4.2.0              # Pure-Python PDF parser (no native deps, no OCR)
+python-docx>=1.1.0        # Parse and read DOCX (Word) files
+
+# --- API helpers ---
+python-multipart>=0.0.9   # Required by FastAPI for file upload (multipart/form-data)
+httpx>=0.27.0             # Async HTTP client (used internally by Supabase SDK)
+
+# --- Testing ---
+pytest>=8.2.0             # Test runner
+pytest-asyncio>=0.23.0    # Async test support for FastAPI endpoints
+httpx>=0.27.0             # Also used as TestClient transport for FastAPI tests
+
+# --- Notebooks (fine-tuning workflow) ---
+jupyter>=1.0.0            # Jupyter notebook server
+nbformat>=5.10.0          # Read/write .ipynb files programmatically

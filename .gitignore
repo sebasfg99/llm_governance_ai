@@ -1,0 +1,53 @@
+# ============================================================
+# .gitignore — Files and directories excluded from git
+# ============================================================
+
+# --- Secrets and environment config (NEVER commit these) ---
+.env
+*.env.local
+
+# --- Uploaded documents (private tenant data) ---
+uploads/*
+!uploads/.gitkeep
+
+# --- Python cache files ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# --- Virtual environments ---
+venv/
+.venv/
+env/
+ENV/
+
+# --- pytest cache ---
+.pytest_cache/
+.coverage
+htmlcov/
+
+# --- Jupyter notebook checkpoints ---
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+
+# --- Build artifacts ---
+*.egg-info/
+dist/
+build/
+
+# --- IDE files ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- macOS files ---
+.DS_Store
+
+# --- Fine-tuning export files (may contain sensitive data) ---
+*.jsonl
+
+# --- Docker volumes (if using local bind mounts) ---
+postgres_data/
