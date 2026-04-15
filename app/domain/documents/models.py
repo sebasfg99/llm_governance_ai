@@ -53,6 +53,7 @@ class FileType(str, Enum):
     """Supported document file formats."""
     PDF = "pdf"
     DOCX = "docx"
+    TXT = "txt"
 
 
 # ============================================================

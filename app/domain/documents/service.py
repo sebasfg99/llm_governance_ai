@@ -34,6 +34,7 @@ from app.core.errors import NotFoundError, DocumentProcessingError, TenantIsolat
 from app.domain.documents.models import Document, DocumentChunk, DocumentStatus, FileType
 from app.domain.documents.parser_pdf import parse_pdf
 from app.domain.documents.parser_docx import parse_docx
+from app.domain.documents.parser_txt import parse_txt
 from app.domain.documents.chunking import chunk_text
 from app.domain.documents.embeddings import embed_texts
 
@@ -107,10 +108,12 @@ class DocumentService:
             file_type = FileType.PDF
         elif extension == "docx":
             file_type = FileType.DOCX
+        elif extension == "txt":
+            file_type = FileType.TXT
         else:
             raise DocumentProcessingError(
                 f"Unsupported file type: .{extension}. "
-                "Only PDF and DOCX files are supported in the MVP."
+                "Only PDF, DOCX, and TXT files are supported."
             )
 
         # --- Create tenant-scoped directory ---
@@ -200,6 +203,8 @@ class DocumentService:
                 raw_text, page_count = parse_pdf(doc.file_path)
             elif doc.file_type == FileType.DOCX:
                 raw_text, page_count = parse_docx(doc.file_path)
+            elif doc.file_type == FileType.TXT:
+                raw_text, page_count = parse_txt(doc.file_path)
             else:
                 raise DocumentProcessingError(f"Unsupported file type: {doc.file_type}")
 

@@ -10,6 +10,11 @@
 uploads/*
 !uploads/.gitkeep
 
+# --- Admin seed documents (private, not for version control) ---
+docs/admin/*.pdf
+docs/admin/*.docx
+docs/admin/*.txt
+
 # --- Python cache files ---
 __pycache__/
 *.py[cod]
