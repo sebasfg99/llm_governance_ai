@@ -22,6 +22,8 @@
 # A tenant's chunks can NEVER appear in another tenant's search results.
 # ============================================================
 
+import re
+
 from supabase import Client
 
 from app.core.config import settings
@@ -29,7 +31,25 @@ from app.core.logging import get_logger
 from app.core.errors import UpstreamError
 
 from app.domain.documents.embeddings import embed_single
-from app.domain.retrieval.ranking import ChunkResult, rerank_chunks
+from app.domain.retrieval.query_expansion import generate_bilingual_queries
+from app.domain.retrieval.ranking import (
+    ChunkResult,
+    apply_per_document_cap,
+    rerank_chunks,
+)
+
+_INSTRUCTION_PREFIXES = re.compile(
+    r"^(resumeme|resume|explícame|explicame|explica|qué es|que es|"
+    r"cuéntame sobre|cuéntame acerca de|hablame de|háblame de|"
+    r"describe|analiza|analízame|dime sobre|habla de|habla acerca de|"
+    r"puedes explicar|puedes resumir|puedes describir)\s+(el|la|los|las|un|una|sobre|acerca de)?\s*",
+    re.IGNORECASE,
+)
+
+
+def _extract_search_topic(query: str) -> str:
+    cleaned = _INSTRUCTION_PREFIXES.sub("", query.strip())
+    return cleaned if cleaned else query
 
 # Logger for this module
 logger = get_logger(__name__)
@@ -98,60 +118,104 @@ class RetrievalService:
             UpstreamError: If the embedding API or DB call fails.
         """
         top_k = top_k or settings.retrieval_top_k
+        # Fetch more candidates than top_k so the threshold filter has room to
+        # discard low-quality chunks without starving the final result set.
+        candidate_k = max(settings.retrieval_candidate_k, top_k)
 
         logger.info(
-            f"Retrieving top-{top_k} chunks for tenant={tenant_id}, "
-            f"country={country}, query='{query[:80]}...'"
+            f"Retrieving top-{top_k} chunks (candidate_k={candidate_k}) for "
+            f"tenant={tenant_id}, country={country}, query='{query[:80]}...'"
         )
 
-        # --- Step 1: Embed the query ---
-        # Convert the user's question into a 1536-dim vector
-        # We'll find chunks whose embeddings are most similar to this vector
-        logger.debug("Embedding query text...")
-        query_embedding = embed_single(query)
+        # --- Step 1: Prepare query variants ---
+        # Strip instruction verbs ("Resumeme el X" → "X") so the embedding
+        # captures the topic, not the instruction pattern.
+        search_topic = _extract_search_topic(query)
+        if search_topic != query:
+            logger.debug(f"Query topic extracted: '{query[:60]}' → '{search_topic}'")
 
-        # --- Step 2: Search tenant-specific chunks ---
-        tenant_chunks = self._search_tenant_chunks(
-            tenant_id=tenant_id,
-            query_embedding=query_embedding,
-            top_k=top_k,
+        # Cross-lingual expansion: turn the topic into a bilingual pair so the
+        # search is not biased toward the corpus' majority language.
+        query_variants = generate_bilingual_queries(search_topic)
+        if not query_variants:
+            query_variants = [search_topic]
+
+        logger.debug(
+            f"Searching with {len(query_variants)} query variant(s): "
+            f"{[v[:60] for v in query_variants]}"
         )
-        logger.debug(f"Retrieved {len(tenant_chunks)} tenant-specific chunks")
 
-        # --- Step 3: (Optional) Search global shared library ---
-        global_chunks: list[ChunkResult] = []
-        if include_global and tenant_id != "global":
-            # Fetch fewer global chunks (they supplement, not replace, tenant chunks)
-            global_top_k = max(2, top_k // 2)
-            global_chunks = self._search_global_chunks(
-                query_embedding=query_embedding,
-                top_k=global_top_k,
-                country=country,
+        # --- Step 2+3: Embed each variant and run both searches ---
+        # Chunks are accumulated in a dict keyed by chunk_id so duplicates
+        # across variants collapse, keeping the max similarity seen.
+        candidate_pool: dict[str, ChunkResult] = {}
+
+        for variant in query_variants:
+            variant_embedding = embed_single(variant)
+
+            tenant_chunks = self._search_tenant_chunks(
+                tenant_id=tenant_id,
+                query_embedding=variant_embedding,
+                top_k=candidate_k,
             )
-            logger.debug(f"Retrieved {len(global_chunks)} global library chunks")
 
-        # --- Step 4: Merge and deduplicate ---
-        # Combine both lists; tenant chunks take priority
-        all_chunks = tenant_chunks + global_chunks
+            global_chunks: list[ChunkResult] = []
+            if include_global and tenant_id != "global":
+                global_chunks = self._search_global_chunks(
+                    query_embedding=variant_embedding,
+                    top_k=candidate_k,
+                    country=country,
+                )
 
-        # Remove duplicates by chunk_id (shouldn't happen but defensive)
-        seen_ids: set[str] = set()
-        unique_chunks: list[ChunkResult] = []
-        for chunk in all_chunks:
-            if chunk.chunk_id not in seen_ids:
-                unique_chunks.append(chunk)
-                seen_ids.add(chunk.chunk_id)
+            logger.debug(
+                f"Variant '{variant[:40]}…' → tenant={len(tenant_chunks)} "
+                f"global={len(global_chunks)}"
+            )
 
-        # --- Step 5: Re-rank and return top_k ---
-        # In MVP, re-rank just sorts by similarity (stub)
+            for chunk in tenant_chunks + global_chunks:
+                existing = candidate_pool.get(chunk.chunk_id)
+                if existing is None or chunk.similarity > existing.similarity:
+                    candidate_pool[chunk.chunk_id] = chunk
+
+        unique_chunks = list(candidate_pool.values())
+        logger.debug(
+            f"Merged candidate pool: {len(unique_chunks)} unique chunks across "
+            f"{len(query_variants)} variant(s)"
+        )
+
+        # --- Step 5: Re-rank ---
         ranked_chunks = rerank_chunks(unique_chunks, query)
 
-        # Limit to top_k after merging global chunks
-        final_chunks = ranked_chunks[:top_k]
+        # --- Step 5b: Per-document diversity cap ---
+        # Keep all chunks but reorder so each document contributes at most
+        # max_per_document chunks before any document contributes a second
+        # batch. Prevents a single high-similarity document (e.g. one that
+        # shares the query language) from monopolising every top-k slot.
+        max_per_doc = settings.retrieval_max_chunks_per_document
+        capped_chunks = apply_per_document_cap(ranked_chunks, max_per_doc)
+
+        # --- Step 6: Filter by similarity threshold ---
+        threshold = settings.similarity_threshold
+        above_threshold = [c for c in capped_chunks if c.similarity >= threshold]
+        discarded = len(capped_chunks) - len(above_threshold)
+        if discarded:
+            logger.info(
+                f"Threshold filter ({threshold}): discarded {discarded} low-similarity chunks, "
+                f"{len(above_threshold)} remaining"
+            )
+
+        if not above_threshold:
+            logger.info(
+                f"No chunks above similarity threshold {threshold}. Returning empty list."
+            )
+            return []
+
+        final_chunks = above_threshold[:top_k]
 
         logger.info(
             f"Retrieval complete: returning {len(final_chunks)} chunks "
-            f"(tenant: {len(tenant_chunks)}, global: {len(global_chunks)})"
+            f"(variants: {len(query_variants)}, unique_candidates: {len(unique_chunks)}, "
+            f"threshold_discarded: {discarded})"
         )
 
         return final_chunks

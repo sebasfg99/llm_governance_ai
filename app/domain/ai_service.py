@@ -221,7 +221,7 @@ class AIService:
         except Exception as e:
             # Tracing failure is logged but never blocks the AI response
             logger.error(f"Failed to save trace: {e}", exc_info=True)
-            trace_id = "trace-error"
+            trace_id = None
 
         # --------------------------------------------------------
         # STEP 7: Run automatic evaluation (heuristic graders)
@@ -229,16 +229,16 @@ class AIService:
         # Checks response quality without making any API calls.
         # Runs synchronously but is very fast (~1ms).
         # --------------------------------------------------------
-        try:
-            self.eval_service.evaluate_trace(
-                trace_id=trace_id,
-                response_text=llm_response.text,
-                chunk_texts=[c.content for c in retrieved_chunks],
-                response_mode=request.response_mode,
-            )
-        except Exception as e:
-            # Eval failure is logged but never blocks the response
-            logger.warning(f"Evaluation failed for trace {trace_id}: {e}")
+        if trace_id is not None:
+            try:
+                self.eval_service.evaluate_trace(
+                    trace_id=trace_id,
+                    response_text=llm_response.text,
+                    chunk_texts=[c.content for c in retrieved_chunks],
+                    response_mode=request.response_mode,
+                )
+            except Exception as e:
+                logger.warning(f"Evaluation failed for trace {trace_id}: {e}")
 
         # --------------------------------------------------------
         # STEP 8: Build and return the response

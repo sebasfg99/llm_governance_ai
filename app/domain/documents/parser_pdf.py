@@ -24,8 +24,35 @@ import pypdf
 from app.core.logging import get_logger
 from app.core.errors import DocumentProcessingError
 
+try:
+    import pytesseract
+    from pdf2image import convert_from_path
+    OCR_AVAILABLE = True
+except ImportError:
+    OCR_AVAILABLE = False
+
 # Logger for this module
 logger = get_logger(__name__)
+
+
+def _ocr_pdf(file_path: str, page_count: int) -> str:
+    """OCR fallback: convert each page to image and extract text with Tesseract."""
+    images = convert_from_path(file_path, dpi=200)
+    page_texts = []
+    for i, image in enumerate(images, start=1):
+        text = pytesseract.image_to_string(image, lang="spa+eng")
+        if text.strip():
+            page_texts.append(f"[Page {i}]\n{text.strip()}")
+        logger.debug(f"OCR page {i}/{page_count}: {len(text)} chars")
+
+    full_text = "\n\n".join(page_texts)
+    if not full_text.strip():
+        raise DocumentProcessingError(
+            "OCR could not extract any text from this PDF. "
+            "The document may be too low resolution or in an unsupported format."
+        )
+    logger.info(f"OCR complete: {len(full_text)} characters extracted from {len(images)} pages")
+    return full_text
 
 
 def parse_pdf(file_path: str) -> tuple[str, int]:
@@ -105,11 +132,15 @@ def parse_pdf(file_path: str) -> tuple[str, int]:
     full_text = "\n\n".join(page_texts)
 
     if not full_text.strip():
-        raise DocumentProcessingError(
-            "No text could be extracted from the PDF. "
-            "The file may contain only scanned images. "
-            "OCR support is planned for a future version."
-        )
+        if OCR_AVAILABLE:
+            logger.info(f"No embedded text found. Attempting OCR on {file_path}...")
+            full_text = _ocr_pdf(file_path, page_count)
+        else:
+            raise DocumentProcessingError(
+                "No text could be extracted from the PDF. "
+                "The file may contain only scanned images. "
+                "Install pytesseract and pdf2image to enable OCR support."
+            )
 
     logger.info(
         f"PDF parsed successfully: {page_count} pages, "

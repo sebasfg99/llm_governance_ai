@@ -65,14 +65,15 @@ def normalize_country(name: str) -> str:
     return ascii_str.lower().strip().replace(" ", "-")
 
 
-def already_processed(db, filename: str, country: str | None) -> bool:
-    """Return True if a 'ready' document with this filename and country already exists."""
+def find_existing_document(db, filename: str, country: str | None) -> dict | None:
+    """Return the most recent document record with this filename and country, or None."""
     query = (
         db.table("documents")
         .select("id, status")
         .eq("tenant_id", GLOBAL_TENANT_ID)
         .eq("filename", filename)
-        .eq("status", "ready")
+        .order("created_at", desc=True)
+        .limit(1)
     )
     if country is None:
         query = query.is_("country", "null")
@@ -80,7 +81,7 @@ def already_processed(db, filename: str, country: str | None) -> bool:
         query = query.eq("country", country)
 
     result = query.execute()
-    return bool(result.data)
+    return result.data[0] if result.data else None
 
 
 def collect_files(folder: Path) -> list[tuple[Path, str | None]]:
@@ -121,7 +122,7 @@ def collect_files(folder: Path) -> list[tuple[Path, str | None]]:
     return files
 
 
-def seed_documents(folder: Path) -> None:
+def seed_documents(folder: Path, force: bool = False) -> None:
     if not folder.exists():
         logger.error(f"Folder not found: {folder}")
         sys.exit(1)
@@ -133,6 +134,8 @@ def seed_documents(folder: Path) -> None:
         return
 
     logger.info(f"Found {len(files)} file(s) in {folder}")
+    if force:
+        logger.info("--force: ready documents will be reprocessed with current settings")
 
     db = get_supabase_client()
     service = DocumentService(db)
@@ -145,22 +148,29 @@ def seed_documents(folder: Path) -> None:
         filename = file_path.name
         country_label = country or "global"
 
-        if already_processed(db, filename, country):
+        existing = find_existing_document(db, filename, country)
+
+        if existing and existing["status"] == "ready" and not force:
             logger.info(f"SKIP: '{filename}' [{country_label}] already exists as ready")
             skipped += 1
             continue
 
-        logger.info(f"PROCESSING: '{filename}' [{country_label}]")
         try:
-            file_bytes = file_path.read_bytes()
-            doc = service.upload_document(
-                tenant_id=GLOBAL_TENANT_ID,
-                filename=filename,
-                file_bytes=file_bytes,
-                country=country,
-            )
-            service.process_document(str(doc.id))
-            logger.info(f"OK: '{filename}' [{country_label}] ingested (doc_id={doc.id})")
+            if existing:
+                logger.info(f"REPROCESS: '{filename}' [{country_label}] (prev status={existing['status']})")
+                service.process_document(existing["id"])
+                logger.info(f"OK: '{filename}' [{country_label}] reprocessed (doc_id={existing['id']})")
+            else:
+                logger.info(f"PROCESSING: '{filename}' [{country_label}]")
+                file_bytes = file_path.read_bytes()
+                doc = service.upload_document(
+                    tenant_id=GLOBAL_TENANT_ID,
+                    filename=filename,
+                    file_bytes=file_bytes,
+                    country=country,
+                )
+                service.process_document(str(doc.id))
+                logger.info(f"OK: '{filename}' [{country_label}] ingested (doc_id={doc.id})")
             processed += 1
         except Exception as e:
             logger.error(f"FAILED: '{filename}' [{country_label}] — {e}")
@@ -181,6 +191,11 @@ if __name__ == "__main__":
         default=DEFAULT_DOCS_FOLDER,
         help=f"Path to folder containing documents to ingest (default: {DEFAULT_DOCS_FOLDER})",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Reprocess all documents, including those already marked as ready",
+    )
     args = parser.parse_args()
 
-    seed_documents(args.folder)
+    seed_documents(args.folder, force=args.force)

@@ -88,3 +88,50 @@ def rerank_chunks(chunks: list[ChunkResult], query: str) -> list[ChunkResult]:
     logger.debug(f"Reranking {len(chunks)} chunks (stub: sorting by similarity)")
 
     return sorted(chunks, key=lambda c: c.similarity, reverse=True)
+
+
+def apply_per_document_cap(
+    chunks: list[ChunkResult],
+    max_per_document: int,
+) -> list[ChunkResult]:
+    """
+    Enforce diversity by limiting how many chunks a single document can
+    contribute to the result list.
+
+    WHY THIS EXISTS:
+    When one document dominates vector similarity (e.g. because it shares
+    the query's language while other relevant docs do not), top-k ends up
+    saturated with a single source and the LLM cannot cross-reference other
+    documents that would otherwise be relevant.
+
+    HOW IT WORKS:
+    Walks the input list in its current (similarity-sorted) order and
+    keeps only the first `max_per_document` chunks per document_id. Any
+    chunks exceeding the cap are appended at the tail, preserving
+    original order so they can still be selected if top-k leaves slots.
+
+    Args:
+        chunks:           Input chunks, expected to be sorted by relevance.
+        max_per_document: Max chunks allowed per document_id. If <= 0,
+                          the original list is returned unchanged.
+
+    Returns:
+        A new list with the capped chunks at the front followed by the
+        overflow chunks (also in original order).
+    """
+    if max_per_document <= 0 or not chunks:
+        return chunks
+
+    per_doc_count: dict[str, int] = {}
+    kept: list[ChunkResult] = []
+    overflow: list[ChunkResult] = []
+
+    for chunk in chunks:
+        count = per_doc_count.get(chunk.document_id, 0)
+        if count < max_per_document:
+            kept.append(chunk)
+            per_doc_count[chunk.document_id] = count + 1
+        else:
+            overflow.append(chunk)
+
+    return kept + overflow

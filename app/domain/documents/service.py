@@ -235,6 +235,11 @@ class DocumentService:
                 )
 
             # --- Step 4: Save chunks to the database ---
+            # Delete any chunks from a previous processing run before inserting.
+            self.db.table("document_chunks").delete().eq(
+                "document_id", str(document_id)
+            ).execute()
+
             # Build the list of rows to insert
             now = datetime.now(timezone.utc).isoformat()
             chunk_rows = [

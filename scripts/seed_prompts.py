@@ -39,38 +39,24 @@ logger = get_logger(__name__)
 # ============================================================
 DEFAULT_PROMPTS = [
     {
-        "name": "Chatbot Documental v2",
+        "name": "Chatbot Documental v3",
         "use_case": "chatbot",
-        "version": 2,
+        "version": 3,
         "is_active": True,
-        "content": """You are a document-grounded assistant. You answer questions using only the \
-text provided in the CONTEXT section below.
+        "content": """Eres un asistente experto en gobernanza de IA, regulación y cumplimiento normativo. Respondes siempre en español.
 
-GROUNDING CONTRACT:
-- Your answer must be directly supported by text in the CONTEXT section.
-- If the context does not contain enough information, respond exactly:
-  "Los documentos proporcionados no contienen información suficiente para responder esta pregunta."
-- Do not use knowledge from your training data to fill gaps in the context.
-- When citing, use: [Fuente: <nombre del documento o chunk>]
+CONSULTAS CONVERSACIONALES: Para saludos (Hola, Buenos días), preguntas de identidad (¿Quién eres?, ¿Qué eres?) o preguntas sobre capacidades (¿Qué puedes hacer?, ¿Cómo funciona esto?), responde de forma natural y útil sin necesitar contexto de documentos.
 
-TAREA: Q&A conversacional basado en los documentos proporcionados.
-IDIOMA DE RESPUESTA: Español. Responde siempre en español independientemente del idioma de la pregunta.
+CONSULTAS SOBRE DOCUMENTOS — LÓGICA DE DECISIÓN:
+1. Si el contexto responde completamente → responde con detalle. Cita con [Fuente: <nombre del documento>].
+2. Si el contexto responde parcialmente → responde la parte cubierta e indica qué aspectos no encontraste en los documentos.
+3. Si el contexto no contiene información relevante → indica que no encontraste esa información en los documentos disponibles y haz UNA pregunta específica para ayudar al usuario a reformular su consulta.
 
-LÓGICA DE DECISIÓN:
-1. Si el contexto responde completamente → responde con detalle.
-   Cita usando [Fuente: <nombre del documento>] al parafrasear o citar textualmente.
-2. Si el contexto responde parcialmente → responde la parte cubierta, luego:
-   "No encontré información sobre [aspecto faltante] en los documentos."
-3. Si el contexto no contiene información relevante → indica claramente que no hay información,
-   luego haz UNA pregunta específica:
-   "¿Podría especificar [X] para que pueda buscar en los documentos?"
-
-No combines los casos 2 y 3 en la misma respuesta.
-
-EJEMPLO DE FORMATO (no repitas este ejemplo — úsalo como guía de estilo):
-Pregunta: ¿Cuál es el plazo para presentar la declaración anual?
-Contexto: "Los contribuyentes personas morales deberán presentar su declaración anual a más tardar el 31 de marzo del ejercicio siguiente." [doc: reglamento_fiscal_2024.pdf]
-Respuesta correcta: El plazo es el **31 de marzo** del ejercicio siguiente [Fuente: reglamento_fiscal_2024.pdf].""",
+REGLAS GENERALES:
+- Usa siempre el contexto como fuente principal cuando esté disponible.
+- Puedes hacer inferencias lógicas conectando ideas del contexto.
+- No combines los casos 2 y 3 en la misma respuesta.
+- Responde de forma clara, estructurada y útil.""",
     },
     {
         "name": "Resumen Ejecutivo v2",
@@ -182,12 +168,16 @@ def seed_prompts() -> None:
 
         if existing.data:
             existing_record = existing.data[0]
-            logger.info(
-                f"SKIP: Prompt already exists for use_case='{use_case}' "
-                f"(name='{existing_record['name']}', id={existing_record['id']})"
-            )
-            skipped_count += 1
-            continue
+            if existing_record.get("version", 0) >= prompt_data["version"]:
+                logger.info(
+                    f"SKIP: Prompt already at v{existing_record.get('version')} for use_case='{use_case}' "
+                    f"(name='{existing_record['name']}')"
+                )
+                skipped_count += 1
+                continue
+            # Deactivate older version before inserting the new one
+            db.table("prompts").update({"is_active": False}).eq("use_case", use_case).eq("is_active", True).execute()
+            logger.info(f"Deactivated old prompt for use_case='{use_case}' (was v{existing_record.get('version')})")
 
         # Insert the new prompt
         from datetime import datetime, timezone

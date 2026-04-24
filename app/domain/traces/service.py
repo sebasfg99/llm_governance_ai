@@ -62,8 +62,7 @@ class TraceService:
             "use_case": request.use_case,
             "model_provider": request.model_provider,
             "model_name": request.model_name,
-            # Store the list of chunk IDs as JSON
-            "retrieved_chunk_ids": json.dumps(request.retrieved_chunk_ids),
+            "retrieved_chunk_ids": request.retrieved_chunk_ids,
             "retrieved_content": request.retrieved_content,
             "response_text": request.response_text,
             "response_mode": request.response_mode,

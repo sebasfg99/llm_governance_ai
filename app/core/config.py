@@ -97,14 +97,41 @@ class Settings(BaseSettings):
     # ----------------------------------------------------------
 
     # How many tokens (approx. words) per text chunk
-    chunk_size: int = 500
+    chunk_size: int = 300
 
     # How many tokens overlap between adjacent chunks.
     # Overlap prevents important context from being split across chunk boundaries.
-    chunk_overlap: int = 50
+    chunk_overlap: int = 30
 
     # How many chunks to retrieve per RAG query
     retrieval_top_k: int = 5
+
+    # Minimum cosine similarity score to include a chunk in the LLM context.
+    # Chunks below this threshold are discarded before prompt assembly.
+    # Range: 0.0 (no filter) – 1.0 (exact match). Default: 0.45
+    similarity_threshold: float = 0.45
+
+    # Number of candidate chunks to fetch from pgvector before threshold filtering.
+    # Fetching more candidates than top_k ensures there are enough chunks above the
+    # threshold to fill the final top_k slots, AND gives the per-document diversity
+    # cap enough pool to pull chunks from multiple documents. Default: 30 (6x top_k).
+    retrieval_candidate_k: int = 30
+
+    # Diversity cap: maximum number of chunks a single document can contribute
+    # to the final top-k list. Prevents one document from monopolising the
+    # context window (e.g. a Spanish doc outranking every English doc on a
+    # Spanish query). Set to 0 or None to disable the cap.
+    # With cap=1 the top-k list will contain k *distinct* documents, which is
+    # the strongest defense against cross-language ranking bias and gives
+    # lower-similarity but topically-relevant documents a fair shot at context.
+    retrieval_max_chunks_per_document: int = 1
+
+    # Cross-lingual query expansion. When True, every user query is translated
+    # into both Spanish and English (one gpt-4o-mini call, ~$0.0001 per query)
+    # and the vector search runs with both variants. Results are merged by
+    # chunk_id keeping the max similarity, which closes the cross-lingual gap
+    # between Spanish queries and English documents (OWASP, ISO, etc.).
+    retrieval_multilingual: bool = True
 
     # ----------------------------------------------------------
     # Application settings
