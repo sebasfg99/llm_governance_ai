@@ -78,6 +78,8 @@ class Document(BaseModel):
     status: DocumentStatus      # Current processing state
     country: str | None = None  # Country this document applies to (normalized slug, e.g. "costa-rica")
                                 # None means the document is global (applies to all countries)
+    framework: str | None = None  # Normative framework slug (e.g. "iso_42001").
+                                  # None means framework-agnostic.
 
     error_message: str | None = None    # Set if processing failed
     page_count: int | None = None       # Populated after successful processing
@@ -113,6 +115,7 @@ class DocumentChunk(BaseModel):
     content: str                # The actual text of this chunk
     chunk_index: int            # Position within the document (0-based)
     country: str | None = None  # Propagated from parent document
+    framework: str | None = None  # Propagated from parent document
 
     # The embedding is a list of floats (1536 dimensions)
     # It's None when the chunk is first created and populated

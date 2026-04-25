@@ -82,6 +82,7 @@ class DocumentService:
         filename: str,
         file_bytes: bytes,
         country: str | None = None,
+        framework: str | None = None,
     ) -> Document:
         """
         Save an uploaded file to disk and create its database record.
@@ -95,6 +96,10 @@ class DocumentService:
             file_bytes: The raw file content as bytes.
             country:   Normalized country slug this document applies to
                        (e.g. "costa-rica"). None means global (all countries).
+            framework: Normative framework slug (e.g. "iso_42001", "nist_airmf").
+                       None means the document is framework-agnostic and is
+                       always eligible for retrieval regardless of any
+                       framework_filter the caller passes.
 
         Returns:
             The newly created Document record with status="pending".
@@ -102,7 +107,10 @@ class DocumentService:
         Raises:
             DocumentProcessingError: If the file type is not supported.
         """
-        logger.info(f"Uploading document: {filename} for tenant: {tenant_id}, country: {country}")
+        logger.info(
+            f"Uploading document: {filename} for tenant: {tenant_id}, "
+            f"country: {country}, framework: {framework}"
+        )
 
         # --- Determine file type from extension ---
         # We only support PDF and DOCX in the MVP
@@ -146,6 +154,7 @@ class DocumentService:
             "file_path": file_path,         # Full path on disk
             "status": DocumentStatus.PENDING.value,
             "country": country,             # None = global, slug = country-specific
+            "framework": framework,         # None = framework-agnostic
             "created_at": now,
         }
 
@@ -249,7 +258,8 @@ class DocumentService:
                     "content": chunk_text_item,
                     "chunk_index": idx,
                     "embedding": embedding,  # List of 1536 floats
-                    "country": doc.country,  # Propagated from parent document
+                    "country": doc.country,     # Propagated from parent document
+                    "framework": doc.framework, # Propagated from parent document
                     "created_at": now,
                 }
                 for idx, (chunk_text_item, embedding) in enumerate(

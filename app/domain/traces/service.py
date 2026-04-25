@@ -57,6 +57,8 @@ class TraceService:
         result = self.db.table("traces").insert({
             "tenant_id": request.tenant_id,
             "user_id": request.user_id,
+            "project_id": request.project_id,
+            "thread_id": request.thread_id,
             "user_query": request.user_query,
             "prompt_text": request.prompt_text,
             "use_case": request.use_case,
@@ -129,3 +131,33 @@ class TraceService:
         )
 
         return [Trace(**row) for row in result.data]
+
+    def list_project_traces(
+        self,
+        project_id: str,
+        tenant_id: str,
+        use_cases: list[str] | None = None,
+        limit: int = 10,
+    ) -> list[Trace]:
+        """
+        Return the most recent traces for a project, optionally filtered by
+        use_case. Used by AIService to reconstruct reasoning when the user
+        asks "why did you do X?".
+
+        We deliberately keep this cheap (no embedding / semantic match) in
+        the v1: recency + use_case filter is enough to give the LLM the
+        relevant context for a narrative justification. A semantic variant
+        can be added later if recall proves insufficient.
+        """
+        query = (
+            self.db.table("traces")
+            .select("*")
+            .eq("tenant_id", tenant_id)
+            .eq("project_id", project_id)
+            .order("created_at", desc=True)
+            .limit(limit)
+        )
+        if use_cases:
+            query = query.in_("use_case", use_cases)
+        result = query.execute()
+        return [Trace(**row) for row in (result.data or [])]

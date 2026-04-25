@@ -28,7 +28,18 @@ from fastapi.responses import JSONResponse
 from app.core.errors import register_error_handlers
 
 # Import all API route modules
-from app.api.routes import health, documents, ai, prompts, feedback, evals
+from app.api.routes import (
+    ai,
+    documents,
+    evals,
+    feedback,
+    health,
+    policies,
+    projects,
+    prompts,
+    risk,
+    threads,
+)
 
 # ============================================================
 # Create the FastAPI application instance
@@ -104,6 +115,31 @@ app.include_router(feedback.router, prefix="/feedback", tags=["Feedback"])
 # --- Evaluations: automatic quality checks ---
 # GET /evals/{trace_id}
 app.include_router(evals.router, prefix="/evals", tags=["Evaluations"])
+
+# --- Projects: central "expediente" that risk, policies and chats attach to ---
+# GET    /projects
+# POST   /projects
+# GET    /projects/{id}
+# PATCH  /projects/{id}
+app.include_router(projects.router, prefix="/projects", tags=["Projects"])
+
+# --- Threads: conversation memory (L1) ---
+# GET  /threads                      list the caller's threads
+# POST /threads                      create an empty thread
+# GET  /threads/{id}                 get a single thread
+# GET  /threads/{id}/messages        replay messages in chronological order
+app.include_router(threads.router, prefix="/threads", tags=["Threads"])
+
+# --- Risk: intake interview (B2) + risk orchestrator (B3) ---
+# POST /risk/{project_id}/intake
+# POST /risk/{project_id}/analyze
+app.include_router(risk.router, prefix="/risk", tags=["Risk"])
+
+# --- Policies: policy generation (C1) + controls (C2) ---
+# POST /policies/generate
+# POST /policies/{project_id}/generate
+# POST /policies/{project_id}/controls
+app.include_router(policies.router, prefix="/policies", tags=["Policies"])
 
 
 # ============================================================

@@ -25,6 +25,11 @@ class Trace(BaseModel):
     tenant_id: str
     user_id: str
 
+    # L1/L2 linkage. Both nullable because traces from the legacy
+    # flow (no thread, no project) still exist in the table.
+    project_id: UUID | None = None
+    thread_id: UUID | None = None
+
     # The raw user question before prompt assembly
     user_query: str
 
@@ -61,6 +66,8 @@ class CreateTraceRequest(BaseModel):
     """
     tenant_id: str
     user_id: str
+    project_id: str | None = None
+    thread_id: str | None = None
     user_query: str
     prompt_text: str
     use_case: str

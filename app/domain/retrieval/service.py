@@ -88,6 +88,7 @@ class RetrievalService:
         top_k: int | None = None,
         include_global: bool = True,
         country: str | None = None,
+        framework_filter: list[str] | None = None,
     ) -> list[ChunkResult]:
         """
         Find the most relevant document chunks for a user query.
@@ -100,15 +101,17 @@ class RetrievalService:
           5. Return top_k results
 
         Args:
-            tenant_id:      Only search this tenant's documents.
-            query:          The user's question or search text.
-            top_k:          Max number of chunks to return.
-                            Defaults to settings.retrieval_top_k (5).
-            include_global: If True, also search the global shared library
-                            and merge results. Default: True.
-            country:        Country filter (e.g. "costa-rica"). If provided,
-                            returns chunks from that country + global chunks
-                            (country IS NULL). If None, returns only global chunks.
+            tenant_id:        Only search this tenant's documents.
+            query:            The user's question or search text.
+            top_k:            Max number of chunks to return.
+                              Defaults to settings.retrieval_top_k (5).
+            include_global:   If True, also search the global shared library
+                              and merge results. Default: True.
+            country:          Country filter (e.g. "costa-rica").
+            framework_filter: Optional list of framework slugs. If provided,
+                              only chunks tagged with one of these frameworks
+                              (or with NULL framework) are returned. None /
+                              empty list means no framework restriction.
 
         Returns:
             List of ChunkResult objects, ordered by relevance (most relevant first).
@@ -122,9 +125,14 @@ class RetrievalService:
         # discard low-quality chunks without starving the final result set.
         candidate_k = max(settings.retrieval_candidate_k, top_k)
 
+        # Normalise framework_filter so downstream code can always treat
+        # None and [] identically ("no restriction").
+        normalized_frameworks = framework_filter or None
+
         logger.info(
             f"Retrieving top-{top_k} chunks (candidate_k={candidate_k}) for "
-            f"tenant={tenant_id}, country={country}, query='{query[:80]}...'"
+            f"tenant={tenant_id}, country={country}, "
+            f"frameworks={normalized_frameworks}, query='{query[:80]}...'"
         )
 
         # --- Step 1: Prepare query variants ---
@@ -157,6 +165,7 @@ class RetrievalService:
                 tenant_id=tenant_id,
                 query_embedding=variant_embedding,
                 top_k=candidate_k,
+                framework_filter=normalized_frameworks,
             )
 
             global_chunks: list[ChunkResult] = []
@@ -165,6 +174,7 @@ class RetrievalService:
                     query_embedding=variant_embedding,
                     top_k=candidate_k,
                     country=country,
+                    framework_filter=normalized_frameworks,
                 )
 
             logger.debug(
@@ -225,27 +235,34 @@ class RetrievalService:
         tenant_id: str,
         query_embedding: list[float],
         top_k: int,
+        framework_filter: list[str] | None = None,
     ) -> list[ChunkResult]:
         """
         Call the match_chunks Postgres RPC function for a specific tenant.
 
         Args:
-            tenant_id:       Filter chunks to this tenant only.
-            query_embedding: The vectorized query.
-            top_k:           Number of results to return.
+            tenant_id:        Filter chunks to this tenant only.
+            query_embedding:  The vectorized query.
+            top_k:            Number of results to return.
+            framework_filter: Optional list of framework slugs. Passed to the
+                              RPC as match_frameworks TEXT[]. None / [] means
+                              no restriction.
 
         Returns:
             List of ChunkResult objects.
         """
         try:
-            # Call the match_chunks function defined in 001_initial.sql
-            # db.rpc() calls a Postgres stored function by name
+            # The RPC is defined in migration 004 (match_chunks with
+            # match_frameworks TEXT[] DEFAULT NULL). We always pass the
+            # key so the function signature binding is unambiguous —
+            # Supabase's PostgREST selects the overload by argument names.
             result = self.db.rpc(
                 "match_chunks",
                 {
-                    "query_embedding": query_embedding,  # The query vector
-                    "match_tenant_id": tenant_id,        # Tenant filter
-                    "match_count": top_k,                # How many to return
+                    "query_embedding": query_embedding,
+                    "match_tenant_id": tenant_id,
+                    "match_count": top_k,
+                    "match_frameworks": framework_filter,
                 }
             ).execute()
 
@@ -273,16 +290,16 @@ class RetrievalService:
         query_embedding: list[float],
         top_k: int,
         country: str | None = None,
+        framework_filter: list[str] | None = None,
     ) -> list[ChunkResult]:
         """
         Call the match_global_chunks Postgres RPC for the shared library.
 
         Args:
-            query_embedding: The vectorized query.
-            top_k:           Number of global chunks to return.
-            country:         Country filter. If provided, returns chunks from
-                             that country + global chunks (country IS NULL).
-                             If None, returns only global chunks (country IS NULL).
+            query_embedding:  The vectorized query.
+            top_k:            Number of global chunks to return.
+            country:          Country filter (NULL → only global docs).
+            framework_filter: Optional framework slug list (NULL → no restriction).
 
         Returns:
             List of ChunkResult objects from the global library.
@@ -294,6 +311,7 @@ class RetrievalService:
                     "query_embedding": query_embedding,
                     "match_count": top_k,
                     "match_country": country,
+                    "match_frameworks": framework_filter,
                 }
             ).execute()
 
