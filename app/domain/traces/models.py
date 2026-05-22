@@ -55,6 +55,16 @@ class Trace(BaseModel):
     latency_ms: int | None = None
     created_at: datetime
 
+    # ---- Migration 006 governance columns ----
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    cost_estimate_usd: float | None = None
+    risk_level: str | None = None
+    requires_disclaimer: bool | None = None
+    # client_id is the spec alias of tenant_id; the DB trigger keeps
+    # them in sync so we accept both shapes.
+    client_id: str | None = None
+
     class Config:
         from_attributes = True
 
@@ -78,3 +88,11 @@ class CreateTraceRequest(BaseModel):
     response_text: str
     response_mode: str = "text"
     latency_ms: int | None = None
+
+    # ---- Migration 006 governance columns ----
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    cost_estimate_usd: float | None = None
+    risk_level: str | None = None
+    requires_disclaimer: bool = False
+    client_id: str | None = None

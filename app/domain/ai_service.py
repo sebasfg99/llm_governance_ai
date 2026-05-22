@@ -27,30 +27,61 @@
 # Every other service is isolated and unaware of siblings.
 # ============================================================
 
-from typing import Optional
+import json
+from dataclasses import dataclass
+from typing import Iterator, Optional
 
 from supabase import Client
 
+from app.core.config import settings
 from app.core.logging import get_logger
 
 # Domain services
 from app.domain.prompts.service import PromptService
 from app.domain.retrieval.service import RetrievalService
-from app.domain.llm.guardrails import apply_guardrails
+from app.domain.llm.guardrails import apply_guardrails, validate_response_guardrails
 from app.domain.llm.router import LLMRouter
 from app.domain.llm.models import LLMRequest
 from app.domain.traces.service import TraceService
 from app.domain.traces.models import CreateTraceRequest, Trace
 from app.domain.evals.service import EvalService
+from app.domain.evals.evaluator import evaluate_response
+from app.domain.observability.cost import estimate_cost
 from app.domain.projects.service import ProjectService
 from app.domain.projects.models import Project
+from app.domain.response_risk.scorer import compute_risk
+from app.domain.response_risk.service import ResponseRiskService
 from app.domain.threads.service import ThreadService
 from app.domain.threads.models import AppendMessageRequest, Message, Thread
 
 # Schemas
 from app.schemas.ai import AIQueryRequest, AIQueryResponse, RetrievedChunkInfo
 
+# Context management
+from app.domain.context.token_counter import TokenCounter
+
+_token_counter = TokenCounter()
+
 logger = get_logger(__name__)
+
+
+# ------------------------------------------------------------
+# PreparedPipeline
+#
+# Captures the state built by every step that runs BEFORE the
+# LLM call. Both query() (blocking) and query_stream() reuse
+# this so prompt assembly, retrieval, memory hydration and
+# guardrails are guaranteed to behave identically across the
+# two execution modes.
+# ------------------------------------------------------------
+@dataclass
+class _PreparedPipeline:
+    final_prompt: str
+    safe_query: str
+    retrieved_chunks: list
+    project: Project | None
+    thread: Thread | None
+    used_reasoning_memory: bool
 
 
 # ------------------------------------------------------------
@@ -106,12 +137,13 @@ class AIService:
         self.eval_service = EvalService(db)
         self.project_service = ProjectService(db)
         self.thread_service = ThreadService(db)
+        self.response_risk_service = ResponseRiskService(db)
 
         # The LLM router is stateless — no DB needed
         self.llm_router = LLMRouter()
 
     # ================================================================
-    # Public entrypoint
+    # Public entrypoints
     # ================================================================
     def query(
         self,
@@ -125,11 +157,213 @@ class AIService:
             f"thread_id={request.thread_id}, query='{request.query[:80]}...'"
         )
 
+        prepared = self._prepare_pipeline(request, tenant_id, user_id)
+
         # --------------------------------------------------------
-        # Step -1 — Load system prompt first so we can apply
-        # guardrails before spending any persistence effort. The
-        # injection check raises ValidationError (HTTP 422) which
-        # must NOT leave a new thread behind.
+        # Step 8 — Call the LLM
+        # --------------------------------------------------------
+        llm_response = self.llm_router.route(
+            LLMRequest(prompt=prepared.final_prompt, use_case=request.use_case)
+        )
+        logger.info(
+            f"LLM response: {len(llm_response.text)} chars, "
+            f"{llm_response.latency_ms}ms via {llm_response.model_provider}"
+        )
+
+        # --------------------------------------------------------
+        # Step 9 — Governance pipeline (eval → guardrails → risk)
+        # Runs BEFORE persistence so the trace carries risk_level.
+        # Best-effort: failures degrade gracefully but never raise.
+        # --------------------------------------------------------
+        governance = self._run_governance_pipeline(
+            request=request,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            prepared=prepared,
+            response_text=llm_response.text,
+        )
+
+        # --------------------------------------------------------
+        # Step 10 — Persist trace + thread messages + evaluation + risk
+        # --------------------------------------------------------
+        trace_id = self._persist_trace_and_eval(
+            request=request,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            prepared=prepared,
+            response_text=governance["safe_response"],
+            model_provider=llm_response.model_provider,
+            model_name=llm_response.model_name,
+            latency_ms=llm_response.latency_ms,
+            governance=governance,
+            prompt_tokens=getattr(llm_response, "prompt_tokens", None),
+            completion_tokens=getattr(llm_response, "completion_tokens", None),
+        )
+
+        # --------------------------------------------------------
+        # Step 11 — Build response (returns the SAFE response so
+        # PII redactions / disclaimers are visible to the caller)
+        # --------------------------------------------------------
+        chunk_infos = [
+            RetrievedChunkInfo(
+                chunk_id=chunk.chunk_id,
+                document_id=chunk.document_id,
+                similarity=round(chunk.similarity, 4),
+                content_preview=chunk.content[:200],
+            )
+            for chunk in prepared.retrieved_chunks
+        ]
+
+        return AIQueryResponse(
+            response_text=governance["safe_response"],
+            trace_id=trace_id,
+            thread_id=str(prepared.thread.id) if prepared.thread else None,
+            project_id=str(prepared.project.id) if prepared.project else None,
+            model_provider=llm_response.model_provider,
+            model_name=llm_response.model_name,
+            latency_ms=llm_response.latency_ms,
+            use_case=request.use_case,
+            retrieved_chunk_count=len(prepared.retrieved_chunks),
+            retrieved_chunks=chunk_infos,
+            used_reasoning_memory=prepared.used_reasoning_memory,
+        )
+
+    # ----------------------------------------------------------
+    # query_stream — Streaming variant of query()
+    #
+    # Runs the same pipeline as query() up to (and including)
+    # prompt assembly, then opens a streaming LLM call. Tokens
+    # are yielded as Server-Sent Events. When the upstream stream
+    # closes, the orchestrator buffers the full text, persists
+    # the trace + thread messages + evaluation, and emits a
+    # final "done" event with the trace_id so the client can
+    # follow up via /traces/{id} or /feedback.
+    # ----------------------------------------------------------
+    def query_stream(
+        self,
+        request: AIQueryRequest,
+        tenant_id: str,
+        user_id: str,
+    ) -> Iterator[bytes]:
+        logger.info(
+            f"AI query (stream): tenant={tenant_id}, user={user_id}, "
+            f"use_case={request.use_case}, project_id={request.project_id}, "
+            f"thread_id={request.thread_id}, query='{request.query[:80]}...'"
+        )
+
+        prepared = self._prepare_pipeline(request, tenant_id, user_id)
+
+        accumulated_text = ""
+        latency_ms = 0
+        model_provider: str = ""
+        model_name: str = ""
+        completed = False
+
+        try:
+            for event in self.llm_router.stream_route(
+                LLMRequest(prompt=prepared.final_prompt, use_case=request.use_case)
+            ):
+                if event.type == "token":
+                    accumulated_text += event.text
+                    yield _sse_event("token", {"text": event.text})
+                elif event.type == "done":
+                    latency_ms = event.latency_ms or 0
+                    model_provider = event.model_provider or ""
+                    model_name = event.model_name or ""
+                    completed = True
+                    # The done event from the LLM is consumed here;
+                    # the SSE done emitted to the client is built
+                    # below after persistence.
+                    break
+        except Exception as e:
+            # Surface the upstream failure as a final error event
+            # so the client knows the stream did not complete.
+            logger.error(f"Streaming LLM call failed: {e}", exc_info=True)
+            yield _sse_event(
+                "error",
+                {"message": "Upstream LLM error", "detail": str(e)},
+            )
+            # Best-effort: still try to persist the partial text so
+            # debugging is possible.
+
+        logger.info(
+            f"Stream finished: {len(accumulated_text)} chars, "
+            f"{latency_ms}ms via {model_provider}, completed={completed}"
+        )
+
+        # --------------------------------------------------------
+        # Persist trace + thread messages + evaluation + risk now
+        # that the full text is buffered. Mirrors query()'s steps
+        # 9-11 but uses the streamed response.
+        # --------------------------------------------------------
+        governance = self._run_governance_pipeline(
+            request=request,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            prepared=prepared,
+            response_text=accumulated_text,
+        )
+
+        trace_id = self._persist_trace_and_eval(
+            request=request,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            prepared=prepared,
+            response_text=governance["safe_response"],
+            model_provider=model_provider,
+            model_name=model_name,
+            latency_ms=latency_ms,
+            governance=governance,
+        )
+
+        chunk_infos_payload = [
+            {
+                "chunk_id": c.chunk_id,
+                "document_id": c.document_id,
+                "similarity": round(c.similarity, 4),
+                "section_ref": getattr(c, "section_ref", None),
+            }
+            for c in prepared.retrieved_chunks
+        ]
+
+        yield _sse_event(
+            "done",
+            {
+                "trace_id": trace_id,
+                "thread_id": str(prepared.thread.id) if prepared.thread else None,
+                "project_id": str(prepared.project.id) if prepared.project else None,
+                "model_provider": model_provider,
+                "model_name": model_name,
+                "latency_ms": latency_ms,
+                "use_case": request.use_case,
+                "retrieved_chunk_count": len(prepared.retrieved_chunks),
+                "retrieved_chunks": chunk_infos_payload,
+                "used_reasoning_memory": prepared.used_reasoning_memory,
+                "completed": completed,
+            },
+        )
+
+    # ================================================================
+    # Pipeline preparation (shared by query and query_stream)
+    # ================================================================
+    def _prepare_pipeline(
+        self,
+        request: AIQueryRequest,
+        tenant_id: str,
+        user_id: str,
+    ) -> _PreparedPipeline:
+        """
+        Run every step that precedes the LLM call:
+        prompts, guardrails, thread/project resolution, retrieval,
+        why-query detection, conversation hydration, source
+        metadata, and prompt assembly. Returns a _PreparedPipeline
+        snapshot that both query() and query_stream() consume.
+        """
+        # --------------------------------------------------------
+        # Step -1 — Load system prompt and apply guardrails before
+        # spending any persistence effort. The injection check
+        # raises ValidationError (HTTP 422) which must NOT leave a
+        # new thread behind.
         # --------------------------------------------------------
         prompt_record = self.prompt_service.get_active_prompt(request.use_case)
         base_system_prompt = prompt_record.content
@@ -144,11 +378,6 @@ class AIService:
 
         # --------------------------------------------------------
         # Step 0 — Resolve / create the thread (L1)
-        #
-        # Conversational use cases always get a thread. Non-conversational
-        # ones (executive_summary, risk_analysis one-shots) only get a
-        # thread if the caller explicitly passed one — we don't want to
-        # litter the sidebar with summary requests.
         # --------------------------------------------------------
         thread: Optional[Thread] = None
         if request.thread_id or request.use_case in _CONVERSATIONAL_USE_CASES:
@@ -184,10 +413,6 @@ class AIService:
 
         # --------------------------------------------------------
         # Step 4 — "Why?" detection + reasoning memory lookup
-        #
-        # Only triggered when there's a project in context AND the
-        # query reads like a justification request. We fetch the
-        # most recent analysis traces from the same project.
         # --------------------------------------------------------
         used_reasoning_memory = False
         reasoning_traces: list[Trace] = []
@@ -210,11 +435,10 @@ class AIService:
                     f"reasoning traces for project {project.id}"
                 )
             except Exception as e:
-                # Reasoning memory is best-effort; never block the main flow.
                 logger.warning(f"Failed to load reasoning traces: {e}")
 
         # --------------------------------------------------------
-        # Step 5 — Load recent messages (conversation history, L1)
+        # Step 5 — Load recent messages (L1)
         # --------------------------------------------------------
         thread_messages: list[Message] = []
         if thread is not None:
@@ -227,13 +451,6 @@ class AIService:
 
         # --------------------------------------------------------
         # Step 6.5 — Hydrate chunk source metadata
-        #
-        # The retrieval layer returns ChunkResult with document_id only.
-        # The LLM needs the document name + framework so it can satisfy
-        # the prompt's "[Fuente: <doc>]" citation rule and attribute
-        # content to the framework the user is asking about. Without
-        # this hydration the model sees opaque "Chunk 1, Chunk 2..."
-        # and refuses framework-specific questions.
         # --------------------------------------------------------
         doc_metadata = self._load_doc_metadata(retrieved_chunks)
 
@@ -252,22 +469,147 @@ class AIService:
         )
         logger.debug(f"Final prompt assembled: {len(final_prompt)} chars")
 
-        # --------------------------------------------------------
-        # Step 8 — Call the LLM
-        # --------------------------------------------------------
-        llm_response = self.llm_router.route(
-            LLMRequest(prompt=final_prompt, use_case=request.use_case)
-        )
-        logger.info(
-            f"LLM response: {len(llm_response.text)} chars, "
-            f"{llm_response.latency_ms}ms via {llm_response.model_provider}"
+        return _PreparedPipeline(
+            final_prompt=final_prompt,
+            safe_query=safe_query,
+            retrieved_chunks=retrieved_chunks,
+            project=project,
+            thread=thread,
+            used_reasoning_memory=used_reasoning_memory,
         )
 
-        # --------------------------------------------------------
-        # Step 9 — Persist trace (bound to project & thread)
-        # --------------------------------------------------------
+    # ================================================================
+    # Governance pipeline (shared by query and query_stream)
+    # ================================================================
+    def _run_governance_pipeline(
+        self,
+        request: AIQueryRequest,
+        tenant_id: str,
+        user_id: str,
+        prepared: _PreparedPipeline,
+        response_text: str,
+    ) -> dict:
+        """
+        Run evaluation → response guardrails → risk scoring on a
+        completed LLM response. Returns a dict with the four
+        artefacts the persistence step needs:
+
+          - "evaluation":  output of evaluate_response()
+          - "guardrails":  output of validate_response_guardrails()
+          - "risk":        output of compute_risk()
+          - "safe_response": the response after PII redaction /
+                             abstention rewriting / disclaimer.
+
+        ALL exceptions are caught — degraded scoring is preferred
+        over breaking the user-facing reply.
+        """
+        evaluation: dict = {}
+        guardrails_result: dict = {
+            "allowed": True,
+            "violations": [],
+            "safe_response": response_text,
+            "requires_disclaimer": False,
+            "pii_findings": [],
+        }
+        risk: dict = {}
+
+        # --- 1. Evaluation (8 metrics + LLM judge) ---
+        # The LLM judge only makes sense when we have chunks to verify
+        # against. With no chunks (small-talk, system queries) we skip
+        # the judge so it does not flag "should_have_said_idk" on every
+        # conversational reply.
+        run_judge = settings.eval_use_llm_judge and bool(prepared.retrieved_chunks)
+        try:
+            evaluation = evaluate_response(
+                query=request.query,
+                chunks=prepared.retrieved_chunks,
+                response=response_text,
+                citations=None,
+                instructions=None,
+                use_llm_judge=run_judge,
+                response_mode=request.response_mode,
+            )
+        except Exception as e:
+            logger.warning(f"Inline evaluator failed (non-fatal): {e}")
+
+        # --- 2. Response guardrails (PII, hallucination, disclaimer) ---
+        try:
+            guardrails_result = validate_response_guardrails(
+                query=request.query,
+                response=response_text,
+                chunks=prepared.retrieved_chunks,
+                client_id=tenant_id,
+                user_id=user_id,
+                evaluation=evaluation or None,
+                use_case=request.use_case,
+            )
+        except Exception as e:
+            logger.warning(f"Response guardrails failed (non-fatal): {e}")
+
+        # --- 3. Risk scoring ---
+        try:
+            risk = compute_risk(
+                evaluation=evaluation,
+                guardrails=guardrails_result,
+                metadata={
+                    "use_case": request.use_case,
+                    "chunks": prepared.retrieved_chunks,
+                    "client_id": tenant_id,
+                },
+            )
+        except Exception as e:
+            logger.warning(f"Risk scoring failed (non-fatal): {e}")
+            risk = {
+                "risk_level": "medium",
+                "confidence_score": 0.5,
+                "risk_reasons": [f"risk_compute_error: {e}"],
+                "retrieval_confidence": 0.0,
+            }
+
+        return {
+            "evaluation": evaluation,
+            "guardrails": guardrails_result,
+            "risk": risk,
+            "safe_response": guardrails_result.get("safe_response") or response_text,
+        }
+
+    # ================================================================
+    # Trace + thread + eval persistence (shared)
+    # ================================================================
+    def _persist_trace_and_eval(
+        self,
+        request: AIQueryRequest,
+        tenant_id: str,
+        user_id: str,
+        prepared: _PreparedPipeline,
+        response_text: str,
+        model_provider: str,
+        model_name: str,
+        latency_ms: int,
+        governance: dict | None = None,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+    ) -> Optional[str]:
+        """
+        Persist the trace, append user + assistant turns to the
+        thread, run the evaluator, and write a response_risk row.
+        Returns the trace id (or None when the trace write failed).
+        Every step is wrapped in try/except so persistence failures
+        never propagate to the user-visible response.
+        """
+        retrieved_chunks = prepared.retrieved_chunks
         retrieved_chunk_ids = [c.chunk_id for c in retrieved_chunks]
         retrieved_content = "\n\n".join(c.content for c in retrieved_chunks)
+
+        risk_payload = (governance or {}).get("risk") or {}
+        guardrails_payload = (governance or {}).get("guardrails") or {}
+
+        cost = estimate_cost(
+            provider=model_provider,
+            model=model_name,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
 
         trace_id: Optional[str] = None
         try:
@@ -275,91 +617,80 @@ class AIService:
                 CreateTraceRequest(
                     tenant_id=tenant_id,
                     user_id=user_id,
-                    project_id=str(project.id) if project else None,
-                    thread_id=str(thread.id) if thread else None,
+                    project_id=str(prepared.project.id) if prepared.project else None,
+                    thread_id=str(prepared.thread.id) if prepared.thread else None,
                     user_query=request.query,
-                    prompt_text=final_prompt,
+                    prompt_text=prepared.final_prompt,
                     use_case=request.use_case,
-                    model_provider=llm_response.model_provider,
-                    model_name=llm_response.model_name,
+                    model_provider=model_provider,
+                    model_name=model_name,
                     retrieved_chunk_ids=retrieved_chunk_ids,
                     retrieved_content=retrieved_content,
-                    response_text=llm_response.text,
+                    response_text=response_text,
                     response_mode=request.response_mode,
-                    latency_ms=llm_response.latency_ms,
+                    latency_ms=latency_ms,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    cost_estimate_usd=cost,
+                    risk_level=risk_payload.get("risk_level"),
+                    requires_disclaimer=bool(guardrails_payload.get("requires_disclaimer")),
+                    client_id=tenant_id,
                 )
             )
             trace_id = str(trace.id)
         except Exception as e:
             logger.error(f"Failed to save trace: {e}", exc_info=True)
 
-        # --------------------------------------------------------
-        # Step 10 — Persist thread messages (user + assistant)
-        #
-        # We write both turns after the trace so the assistant message
-        # can reference trace_id. If the trace write failed, we still
-        # persist the turns so the conversation is not lost — just
-        # without a trace reference.
-        # --------------------------------------------------------
-        if thread is not None:
+        if prepared.thread is not None:
             try:
                 self.thread_service.append_message(
-                    thread_id=str(thread.id),
+                    thread_id=str(prepared.thread.id),
                     request=AppendMessageRequest(
                         role="user", content=request.query
                     ),
                 )
                 self.thread_service.append_message(
-                    thread_id=str(thread.id),
+                    thread_id=str(prepared.thread.id),
                     request=AppendMessageRequest(
                         role="assistant",
-                        content=llm_response.text,
+                        content=response_text,
                         trace_id=trace_id,
                     ),
                 )
             except Exception as e:
                 logger.warning(f"Failed to persist thread messages: {e}")
 
-        # --------------------------------------------------------
-        # Step 11 — Heuristic evaluation (unchanged)
-        # --------------------------------------------------------
         if trace_id is not None:
             try:
                 self.eval_service.evaluate_trace(
                     trace_id=trace_id,
-                    response_text=llm_response.text,
+                    response_text=response_text,
                     chunk_texts=[c.content for c in retrieved_chunks],
                     response_mode=request.response_mode,
+                    query=request.query,
+                    chunks=retrieved_chunks,
+                    instructions=None,
+                    # The judge already ran in _run_governance_pipeline; the
+                    # service still re-runs the heuristics + persists the
+                    # full row. We disable the judge here to save the
+                    # double-cost when governance was already produced.
+                    use_llm_judge=governance is None,
                 )
             except Exception as e:
                 logger.warning(f"Evaluation failed for trace {trace_id}: {e}")
 
-        # --------------------------------------------------------
-        # Step 12 — Build response
-        # --------------------------------------------------------
-        chunk_infos = [
-            RetrievedChunkInfo(
-                chunk_id=chunk.chunk_id,
-                document_id=chunk.document_id,
-                similarity=round(chunk.similarity, 4),
-                content_preview=chunk.content[:200],
-            )
-            for chunk in retrieved_chunks
-        ]
+        if trace_id is not None and risk_payload:
+            try:
+                self.response_risk_service.persist(
+                    trace_id=trace_id,
+                    tenant_id=tenant_id,
+                    client_id=tenant_id,
+                    risk=risk_payload,
+                )
+            except Exception as e:
+                logger.warning(f"Risk persistence failed for trace {trace_id}: {e}")
 
-        return AIQueryResponse(
-            response_text=llm_response.text,
-            trace_id=trace_id,
-            thread_id=str(thread.id) if thread else None,
-            project_id=str(project.id) if project else None,
-            model_provider=llm_response.model_provider,
-            model_name=llm_response.model_name,
-            latency_ms=llm_response.latency_ms,
-            use_case=request.use_case,
-            retrieved_chunk_count=len(retrieved_chunks),
-            retrieved_chunks=chunk_infos,
-            used_reasoning_memory=used_reasoning_memory,
-        )
+        return trace_id
 
     # ================================================================
     # Internal helpers
@@ -437,9 +768,14 @@ class AIService:
                 meta = doc_metadata.get(c.document_id) or {}
                 filename = meta.get("filename") or "documento desconocido"
                 framework = meta.get("framework")
+                section_ref = getattr(c, "section_ref", None)
+                # Optional fragments. Each is omitted entirely when its
+                # source value is missing so the model never sees an
+                # empty "Section: " or "Framework: " label.
+                section_part = f" | Section: {section_ref}" if section_ref else ""
                 fw_part = f" | Framework: {framework}" if framework else ""
                 return (
-                    f"[Chunk {i+1} | Fuente: {filename}{fw_part} "
+                    f"[Chunk {i+1} | Fuente: {filename}{section_part}{fw_part} "
                     f"| similarity: {c.similarity:.3f}]\n{c.content}"
                 )
 
@@ -469,7 +805,28 @@ class AIService:
         # --- User question ---
         parts.append(f"\n\nPregunta del usuario: {user_query}")
 
-        return "\n".join(parts)
+        assembled = "\n".join(parts)
+
+        # Pre-call token estimation — logged always, enforced only when
+        # context_budget_enabled=True (future phases).
+        estimated_tokens = _token_counter.count(assembled, settings.llm_default_model)
+        input_budget = settings.context_window_tokens - settings.reserved_output_tokens
+        logger.info(
+            "context_tokens_estimated",
+            extra={
+                "estimated_input_tokens": estimated_tokens,
+                "reserved_output_tokens": settings.reserved_output_tokens,
+                "input_budget": input_budget,
+                "budget_used_pct": round(estimated_tokens / input_budget * 100, 1),
+                "chunks_count": len(chunks),
+                "history_messages": len(thread_messages),
+                "traces_count": len(reasoning_traces),
+                "response_mode": response_mode,
+                "context_budget_enabled": settings.context_budget_enabled,
+            },
+        )
+
+        return assembled
 
     @staticmethod
     def _format_project_block(project: Project) -> str:
@@ -570,6 +927,26 @@ class AIService:
                 content = content[:500] + "…"
             lines.append(f"{prefix}: {content}")
         return "\n".join(lines)
+
+
+# ============================================================
+# SSE encoding helper
+#
+# Server-Sent Events use a line-based framing:
+#
+#   event: <event_name>
+#   data: <utf-8 line>
+#   data: <utf-8 line>
+#   <empty line>            <- terminates the event
+#
+# We always serialise the payload as a single-line JSON string
+# so multiline content cannot break the framing. The empty line
+# is required by the SSE spec — without it, the browser keeps
+# buffering the event.
+# ============================================================
+def _sse_event(event_name: str, payload: dict) -> bytes:
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return f"event: {event_name}\ndata: {body}\n\n".encode("utf-8")
 
 
 # ============================================================

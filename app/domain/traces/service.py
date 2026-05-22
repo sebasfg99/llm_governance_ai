@@ -70,6 +70,14 @@ class TraceService:
             "response_mode": request.response_mode,
             "latency_ms": request.latency_ms,
             "created_at": datetime.now(timezone.utc).isoformat(),
+            # Migration 006 governance columns. The DB trigger
+            # will backfill client_id from tenant_id when None.
+            "prompt_tokens": request.prompt_tokens,
+            "completion_tokens": request.completion_tokens,
+            "cost_estimate_usd": request.cost_estimate_usd,
+            "risk_level": request.risk_level,
+            "requires_disclaimer": request.requires_disclaimer,
+            "client_id": request.client_id or request.tenant_id,
         }).execute()
 
         if not result.data:

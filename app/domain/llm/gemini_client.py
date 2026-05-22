@@ -16,11 +16,14 @@
 # ============================================================
 
 import time
+from typing import Iterator
+
 import google.generativeai as genai
 
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.errors import UpstreamError
+from app.domain.llm.models import StreamEvent
 
 logger = get_logger(__name__)
 
@@ -154,3 +157,94 @@ class GeminiClient:
         )
 
         return response_text, latency_ms, prompt_tokens, completion_tokens
+
+    # ----------------------------------------------------------
+    # Streaming variant
+    #
+    # Gemini supports streaming through generate_content(stream=True).
+    # The returned iterator yields chunks where chunk.text is the
+    # incremental delta. usage_metadata may appear on the final
+    # chunk; we also try to read it from the iterator's
+    # response.resolve() handle when available.
+    # ----------------------------------------------------------
+    def stream_generate(
+        self,
+        prompt: str,
+        model: str | None = None,
+        temperature: float = 0.2,
+        max_tokens: int = 2048,
+    ) -> Iterator[StreamEvent]:
+        model = model or settings.llm_default_model
+
+        logger.debug(f"Streaming Gemini model={model}, temperature={temperature}")
+        start_time = time.time()
+
+        try:
+            gemini_model = genai.GenerativeModel(
+                model_name=model,
+                generation_config=genai.GenerationConfig(
+                    temperature=temperature,
+                    max_output_tokens=max_tokens,
+                ),
+            )
+            stream = gemini_model.generate_content(prompt, stream=True)
+        except Exception as e:
+            error_str = str(e).lower()
+            if "api key" in error_str or "authentication" in error_str:
+                raise UpstreamError(
+                    "Gemini authentication failed. Check your GEMINI_API_KEY.",
+                    detail={"provider": "gemini", "error": str(e)},
+                )
+            elif "quota" in error_str or "rate" in error_str:
+                raise UpstreamError(
+                    "Gemini rate limit or quota exceeded.",
+                    detail={"provider": "gemini", "error": str(e)},
+                )
+            raise UpstreamError(
+                f"Gemini streaming error: {e}",
+                detail={"provider": "gemini", "error": str(e)},
+            )
+
+        last_chunk = None
+        try:
+            for chunk in stream:
+                last_chunk = chunk
+                # Gemini's chunk.text raises if the chunk has no text part
+                # (e.g. safety-filtered fragments). Guard with try/except
+                # so a single empty chunk doesn't kill the stream.
+                try:
+                    delta = chunk.text or ""
+                except Exception:
+                    delta = ""
+                if delta:
+                    yield StreamEvent(type="token", text=delta)
+        except Exception as e:
+            raise UpstreamError(
+                f"Gemini stream interrupted: {e}",
+                detail={"provider": "gemini", "error": str(e)},
+            )
+
+        latency_ms = int((time.time() - start_time) * 1000)
+
+        prompt_tokens: int | None = None
+        completion_tokens: int | None = None
+        if last_chunk is not None and hasattr(last_chunk, "usage_metadata"):
+            usage = last_chunk.usage_metadata
+            if usage:
+                prompt_tokens = getattr(usage, "prompt_token_count", None)
+                completion_tokens = getattr(usage, "candidates_token_count", None)
+
+        logger.debug(
+            f"Gemini stream finished: {latency_ms}ms, "
+            f"tokens: {prompt_tokens} prompt + {completion_tokens} completion"
+        )
+
+        yield StreamEvent(
+            type="done",
+            text="",
+            latency_ms=latency_ms,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            model_provider="gemini",
+            model_name=model,
+        )

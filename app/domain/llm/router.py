@@ -20,11 +20,13 @@
 # TODO: Add circuit breaker pattern for provider outages
 # ============================================================
 
+from typing import Iterator
+
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.errors import UpstreamError
 
-from app.domain.llm.models import LLMRequest, LLMResponse
+from app.domain.llm.models import LLMRequest, LLMResponse, StreamEvent
 from app.domain.llm.openai_client import OpenAIClient
 from app.domain.llm.gemini_client import GeminiClient
 
@@ -130,6 +132,44 @@ class LLMRouter:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
         )
+
+    # ----------------------------------------------------------
+    # Streaming variant
+    #
+    # Mirrors route() but yields StreamEvent objects from the
+    # provider's stream_generate(). The orchestrator buffers the
+    # text events for tracing and forwards each token to the
+    # client via Server-Sent Events.
+    #
+    # We keep the same provider-selection logic so a tenant's
+    # configured provider applies identically to streaming and
+    # non-streaming calls.
+    # ----------------------------------------------------------
+    def stream_route(self, request: LLMRequest) -> Iterator[StreamEvent]:
+        provider = settings.llm_default_provider.lower()
+        model = settings.llm_default_model
+
+        logger.info(
+            f"Streaming LLM request: provider={provider}, model={model}, "
+            f"use_case={request.use_case}, "
+            f"prompt_length={len(request.prompt)} chars"
+        )
+
+        if provider == "openai":
+            yield from self._get_openai_client().stream_generate(
+                prompt=request.prompt,
+                model=model,
+            )
+        elif provider == "gemini":
+            yield from self._get_gemini_client().stream_generate(
+                prompt=request.prompt,
+                model=model,
+            )
+        else:
+            raise UpstreamError(
+                f"Unknown LLM provider: '{provider}'. "
+                "Set LLM_DEFAULT_PROVIDER to 'openai' or 'gemini' in your .env file."
+            )
 
     # ----------------------------------------------------------
     # Lazy client getters

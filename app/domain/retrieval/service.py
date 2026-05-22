@@ -32,6 +32,7 @@ from app.core.errors import UpstreamError
 
 from app.domain.documents.embeddings import embed_single
 from app.domain.retrieval.query_expansion import generate_bilingual_queries
+from app.domain.retrieval.hybrid import hybrid_search, hybrid_search_global
 from app.domain.retrieval.ranking import (
     ChunkResult,
     apply_per_document_cap,
@@ -89,6 +90,7 @@ class RetrievalService:
         include_global: bool = True,
         country: str | None = None,
         framework_filter: list[str] | None = None,
+        use_hybrid: bool = False,
     ) -> list[ChunkResult]:
         """
         Find the most relevant document chunks for a user query.
@@ -161,25 +163,58 @@ class RetrievalService:
         for variant in query_variants:
             variant_embedding = embed_single(variant)
 
-            tenant_chunks = self._search_tenant_chunks(
-                tenant_id=tenant_id,
-                query_embedding=variant_embedding,
-                top_k=candidate_k,
-                framework_filter=normalized_frameworks,
-            )
-
-            global_chunks: list[ChunkResult] = []
-            if include_global and tenant_id != "global":
-                global_chunks = self._search_global_chunks(
+            if use_hybrid:
+                # Hybrid path: vector + keyword in one RPC, fused via RRF.
+                # Falls back gracefully if the new RPCs aren't deployed yet.
+                try:
+                    tenant_chunks = hybrid_search(
+                        self.db,
+                        tenant_id=tenant_id,
+                        query_embedding=variant_embedding,
+                        query_text=variant,
+                        top_k=candidate_k,
+                        framework_filter=normalized_frameworks,
+                    )
+                except UpstreamError as e:
+                    logger.warning(
+                        f"Hybrid search unavailable; falling back to vector-only: {e}"
+                    )
+                    tenant_chunks = self._search_tenant_chunks(
+                        tenant_id=tenant_id,
+                        query_embedding=variant_embedding,
+                        top_k=candidate_k,
+                        framework_filter=normalized_frameworks,
+                    )
+                global_chunks: list[ChunkResult] = []
+                if include_global and tenant_id != "global":
+                    global_chunks = hybrid_search_global(
+                        self.db,
+                        query_embedding=variant_embedding,
+                        query_text=variant,
+                        top_k=candidate_k,
+                        country=country,
+                        framework_filter=normalized_frameworks,
+                    )
+            else:
+                tenant_chunks = self._search_tenant_chunks(
+                    tenant_id=tenant_id,
                     query_embedding=variant_embedding,
                     top_k=candidate_k,
-                    country=country,
                     framework_filter=normalized_frameworks,
                 )
 
+                global_chunks = []
+                if include_global and tenant_id != "global":
+                    global_chunks = self._search_global_chunks(
+                        query_embedding=variant_embedding,
+                        top_k=candidate_k,
+                        country=country,
+                        framework_filter=normalized_frameworks,
+                    )
+
             logger.debug(
                 f"Variant '{variant[:40]}…' → tenant={len(tenant_chunks)} "
-                f"global={len(global_chunks)}"
+                f"global={len(global_chunks)} (hybrid={use_hybrid})"
             )
 
             for chunk in tenant_chunks + global_chunks:
@@ -272,7 +307,12 @@ class RetrievalService:
                 detail={"tenant_id": tenant_id},
             )
 
-        # Convert the raw DB rows into ChunkResult objects
+        # Convert the raw DB rows into ChunkResult objects.
+        # section_ref is read with .get(...) because rows produced by an
+        # older RPC (pre-migration 005) won't carry the column. Falling
+        # back to None keeps retrieval functional during the rollout
+        # window where the SQL function may have been updated before
+        # the chunks are re-processed.
         return [
             ChunkResult(
                 chunk_id=str(row["id"]),
@@ -281,6 +321,7 @@ class RetrievalService:
                 content=row["content"],
                 chunk_index=row["chunk_index"],
                 similarity=float(row["similarity"]),
+                section_ref=row.get("section_ref"),
             )
             for row in (result.data or [])
         ]
@@ -328,6 +369,7 @@ class RetrievalService:
                 content=row["content"],
                 chunk_index=row["chunk_index"],
                 similarity=float(row["similarity"]),
+                section_ref=row.get("section_ref"),
             )
             for row in (result.data or [])
         ]

@@ -145,3 +145,193 @@ class TestAIQueryEndpoint:
         )
         # FastAPI's Pydantic validation (min_length=1) should catch this
         assert response.status_code == 422
+
+    def test_stream_with_structured_mode_returns_422(self, client):
+        """
+        Streaming JSON would arrive in non-parseable fragments and provides
+        no UX benefit, so the schema validator must reject the combination
+        with HTTP 422 before any pipeline work happens.
+        """
+        response = client.post(
+            "/ai/query",
+            json={
+                "query": "What is ISO 42001?",
+                "use_case": "chatbot",
+                "response_mode": "structured",
+                "stream": True,
+            },
+        )
+        assert response.status_code == 422
+        data = response.json()
+        body = (data.get("message") or "") + str(data.get("detail") or "")
+        # The validator's error message should mention the offending pair
+        # so callers can fix their request without guessing.
+        assert "stream" in body.lower()
+        assert "structured" in body.lower()
+
+
+class TestSectionRefInPrompt:
+    """The chunk header in the assembled prompt must surface section_ref."""
+
+    def test_assemble_prompt_includes_section_ref_when_present(self):
+        from app.domain.ai_service import AIService
+        from app.domain.retrieval.ranking import ChunkResult
+
+        # Build a service with a no-op DB (we only call _assemble_prompt).
+        service = AIService(MagicMock())
+
+        chunk_with_section = ChunkResult(
+            chunk_id="c1",
+            document_id="d1",
+            tenant_id="t1",
+            content="texto del chunk",
+            chunk_index=0,
+            similarity=0.812,
+            section_ref="Articulo 9",
+        )
+
+        prompt = service._assemble_prompt(
+            system_prompt="SYS",
+            project=None,
+            thread_messages=[],
+            reasoning_traces=[],
+            chunks=[chunk_with_section],
+            doc_metadata={
+                "d1": {"filename": "ISO42001.pdf", "framework": "iso_42001"},
+            },
+            user_query="dummy",
+        )
+
+        # All three labels must appear when their data is present.
+        assert "Fuente: ISO42001.pdf" in prompt
+        assert "Section: Articulo 9" in prompt
+        assert "Framework: iso_42001" in prompt
+
+    def test_assemble_prompt_omits_section_ref_when_none(self):
+        from app.domain.ai_service import AIService
+        from app.domain.retrieval.ranking import ChunkResult
+
+        service = AIService(MagicMock())
+
+        chunk_no_section = ChunkResult(
+            chunk_id="c2",
+            document_id="d2",
+            tenant_id="t1",
+            content="texto sin marker",
+            chunk_index=0,
+            similarity=0.6,
+            section_ref=None,
+        )
+
+        prompt = service._assemble_prompt(
+            system_prompt="SYS",
+            project=None,
+            thread_messages=[],
+            reasoning_traces=[],
+            chunks=[chunk_no_section],
+            doc_metadata={
+                "d2": {"filename": "Whitepaper.pdf", "framework": None},
+            },
+            user_query="dummy",
+        )
+
+        assert "Fuente: Whitepaper.pdf" in prompt
+        # No empty "Section: " label when section_ref is None.
+        assert "Section:" not in prompt
+        # No empty "Framework: " label when framework is None.
+        assert "Framework:" not in prompt
+
+
+class TestStreamingEndpoint:
+    """End-to-end SSE behaviour of POST /ai/query?stream=true."""
+
+    @patch("app.domain.ai_service.PromptService")
+    @patch("app.domain.ai_service.RetrievalService")
+    @patch("app.domain.ai_service.LLMRouter")
+    @patch("app.domain.ai_service.TraceService")
+    @patch("app.domain.ai_service.EvalService")
+    @patch("app.domain.ai_service.ProjectService")
+    @patch("app.domain.ai_service.ThreadService")
+    def test_stream_emits_token_events_and_done_event(
+        self,
+        mock_thread_svc,
+        mock_project_svc,
+        mock_eval_svc,
+        mock_trace_svc,
+        mock_router,
+        mock_retrieval_svc,
+        mock_prompt_svc,
+        client,
+    ):
+        """
+        With stream=true, the response must:
+          - have content-type text/event-stream
+          - contain at least one "event: token" line per emitted token
+          - end with one "event: done" event carrying trace metadata
+        """
+        from app.domain.llm.models import StreamEvent
+
+        # Mocks shared with the non-streaming test.
+        mock_prompt = MagicMock()
+        mock_prompt.content = "You are a helpful assistant."
+        mock_prompt.name = "Test"
+        mock_prompt.version = 1
+        mock_prompt_svc.return_value.get_active_prompt.return_value = mock_prompt
+
+        mock_retrieval_svc.return_value.retrieve.return_value = []
+
+        # The stream_route mock yields three token events then a done event,
+        # mirroring exactly what an LLM client would produce.
+        def fake_stream(_request):
+            yield StreamEvent(type="token", text="Hola")
+            yield StreamEvent(type="token", text=" mundo")
+            yield StreamEvent(type="token", text=".")
+            yield StreamEvent(
+                type="done",
+                text="",
+                latency_ms=128,
+                prompt_tokens=10,
+                completion_tokens=3,
+                model_provider="openai",
+                model_name="gpt-4o-mini",
+            )
+
+        mock_router.return_value.stream_route.side_effect = fake_stream
+
+        mock_trace = MagicMock()
+        mock_trace.id = "00000000-0000-0000-0000-0000000000aa"
+        mock_trace_svc.return_value.create_trace.return_value = mock_trace
+        mock_eval_svc.return_value.evaluate_trace.return_value = MagicMock()
+        mock_project_svc.return_value.get_optional.return_value = None
+
+        mock_thread = MagicMock()
+        mock_thread.id = "00000000-0000-0000-0000-0000000000bb"
+        mock_thread_svc.return_value.get_or_create.return_value = mock_thread
+        mock_thread_svc.return_value.get_recent_messages.return_value = []
+
+        with client.stream(
+            "POST",
+            "/ai/query",
+            json={
+                "query": "Saluda en español",
+                "use_case": "chatbot",
+                "stream": True,
+            },
+        ) as response:
+            assert response.status_code == 200
+            assert response.headers["content-type"].startswith("text/event-stream")
+            body = b"".join(response.iter_bytes()).decode("utf-8")
+
+        # Three token events were emitted by fake_stream and the orchestrator
+        # forwards each as its own SSE event.
+        assert body.count("event: token") == 3
+        assert "\"text\":\"Hola\"" in body
+        assert "\"text\":\" mundo\"" in body
+        assert "\"text\":\".\"" in body
+
+        # The done event must close the stream and surface trace metadata.
+        assert body.count("event: done") == 1
+        assert "00000000-0000-0000-0000-0000000000aa" in body  # trace_id
+        assert "00000000-0000-0000-0000-0000000000bb" in body  # thread_id
+        assert "\"latency_ms\":128" in body
+        assert "\"completed\":true" in body

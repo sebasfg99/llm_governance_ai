@@ -33,6 +33,7 @@ from supabase import Client
 from app.core.security import verify_token, extract_token_from_header, TokenPayload
 from app.core.errors import AuthenticationError
 from app.core.logging import get_logger
+from app.core.tenancy import get_validated_tenant, validate_tenant_access
 from app.db.supabase import get_supabase_client
 
 # Logger for this module
@@ -101,3 +102,23 @@ def get_current_user(
     except Exception as e:
         logger.warning(f"Token verification failed: {e}")
         raise AuthenticationError("Invalid or expired token")
+
+
+# ============================================================
+# Tenant-validated identity (Task 5)
+#
+# get_validated_tenant() is implemented in app/core/tenancy.py.
+# We re-export it here so route modules can import it from the
+# usual deps location:
+#
+#   from app.api.deps import get_validated_tenant
+#
+# The dependency raises AuthenticationError or TenantIsolationError
+# automatically when the caller does not pass a valid client_id.
+# ============================================================
+__all__ = [
+    "get_db",
+    "get_current_user",
+    "get_validated_tenant",
+    "validate_tenant_access",
+]

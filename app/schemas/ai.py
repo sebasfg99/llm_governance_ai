@@ -22,7 +22,7 @@
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ============================================================
@@ -118,6 +118,38 @@ class AIQueryRequest(BaseModel):
         description="Optional list of framework slugs to scope RAG retrieval to.",
         example=["iso_42001", "nist_airmf"],
     )
+
+    # When True the response is delivered as Server-Sent Events
+    # (text/event-stream). Each token arrives as `event: token`
+    # with `data: {"text": "..."}`, and the stream closes with
+    # `event: done` carrying trace_id, latency_ms and chunk count.
+    #
+    # Streaming is incompatible with response_mode="structured"
+    # because partial JSON chunks are not parseable. The validator
+    # below rejects that combination with a 422.
+    stream: bool = Field(
+        default=False,
+        description=(
+            "If true, the response is streamed token-by-token as "
+            "Server-Sent Events (text/event-stream). Cannot be used "
+            "with response_mode='structured'."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _stream_requires_text_mode(self) -> "AIQueryRequest":
+        # Streaming JSON would arrive in non-parseable fragments and
+        # provides zero UX benefit (the client must wait for the full
+        # payload anyway to call json.loads). We reject the combination
+        # explicitly so callers see a clear 422 instead of getting a
+        # broken stream silently.
+        if self.stream and self.response_mode == "structured":
+            raise ValueError(
+                "stream=true is not supported with response_mode='structured'. "
+                "Use stream=true with response_mode='text', or use "
+                "response_mode='structured' without streaming."
+            )
+        return self
 
 
 class RetrievedChunkInfo(BaseModel):

@@ -5,6 +5,8 @@
 # These are internal models used between services.
 # ============================================================
 
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -55,3 +57,37 @@ class LLMResponse(BaseModel):
 
     # Number of tokens in the response (if returned by the API)
     completion_tokens: int | None = None
+
+
+# ============================================================
+# Streaming event
+#
+# Streaming providers emit a sequence of incremental tokens
+# followed by a final summary with timing and token counts.
+# We normalise both into a single StreamEvent shape so the
+# router and the orchestrator do not need to know which
+# provider produced the stream.
+#
+# Event types:
+#   - "token": partial response text. `text` is the new chunk.
+#   - "done":  end of stream. `text` is "" and the metric
+#             fields (latency_ms, prompt_tokens, completion_tokens)
+#             are populated.
+#
+# An "error" type is reserved for the future when we need to
+# surface mid-stream upstream errors without raising.
+# ============================================================
+class StreamEvent(BaseModel):
+    """Normalised event yielded by every streaming LLM provider."""
+
+    type: Literal["token", "done"]
+
+    # Incremental token text. Empty string on "done" events.
+    text: str = ""
+
+    # Populated only on "done" events.
+    latency_ms: int | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    model_provider: str | None = None
+    model_name: str | None = None

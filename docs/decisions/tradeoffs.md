@@ -16,18 +16,22 @@ estado actual y qué planes hay para evolucionar.
 | **Coste** | ✅ Una sola DB | ❌ Servicio separado, $$$ |
 | **Operaciones** | ✅ Backups y monitoreo unificados | ❌ Más infra |
 | **Filtros SQL** | ✅ Joins triviales con metadata | ⚠️ Limitados |
-| **Recall a >1M vectores** | ⚠️ ivfflat empieza a sufrir | ✅ Optimizado |
-| **Latencia p99** | ⚠️ ~150-300ms con probes alto | ✅ <50ms |
+| **Recall a >1M vectores** | ✅ HNSW (migración 005) | ✅ Optimizado |
+| **Latencia p99** | ⚠️ ~80-200ms con `ef_search=100` | ✅ <50ms |
 | **Hybrid search (BM25 + vector)** | ⚠️ Requiere trabajo manual | ✅ Built-in |
 
 ### Estado
 
 ✅ **Aceptable hasta ~500K chunks**. Hoy estamos en ~10K. Margen amplio.
+HNSW activado en migración 005 (ver
+[ADR-013](design_choices.md#adr-013--chunking-section-aware--hnsw)).
 
 ### Plan de evolución
 
-- **Corto plazo:** ajustar `lists` y `probes` del índice ivfflat.
-- **Mediano plazo:** evaluar HNSW (pgvector lo soporta a partir de v0.5).
+- **Corto plazo:** ✅ migrado de `ivfflat` a `hnsw` (m=16,
+  ef_construction=64, ef_search=100 runtime).
+- **Mediano plazo:** monitorear recall y latencia en producción; subir
+  `ef_search` a 200 si hay caídas.
 - **Largo plazo (>1M chunks):** migrar a vector DB dedicado solo si la
   latencia se vuelve un blocker.
 
@@ -110,56 +114,63 @@ Rerank v3 (multi-lingual) — probablemente +10-15% en MRR.
 
 ---
 
-## 5. Chunking simple (fixed-size)
+## 5. ~~Chunking simple (fixed-size)~~ (RESUELTO PARCIALMENTE)
 
-### Trade-off
+### Trade-off original
 
-`app/domain/documents/chunking.py:chunk_text` divide por número de
-caracteres con overlap. **No detecta secciones, encabezados, tablas,
-listas.**
-
-- ✅ **Determinístico, rápido, fácil de debuggear**.
-- ⚠️ A veces parte una oración / un control en dos chunks.
-- ⚠️ No preserva la estructura semántica de un documento normativo.
+`app/domain/documents/chunking.py:chunk_text` dividía por número de
+palabras con overlap, **sin detectar secciones, encabezados, tablas
+ni listas**.
 
 ### Estado
 
-✅ Funciona para PDFs/DOCXs cortos. Para documentos largos con
-estructura compleja (ej: GDPR full text), perdemos algo de coherencia.
+✅ **Resuelto en 2026-04-27** con el chunker section-aware. Ver
+[ADR-013](design_choices.md#adr-013--chunking-section-aware--hnsw).
 
-### Plan
+`chunk_text_with_sections()` detecta marcadores legales con regex
+(`Artículo`, `Sección`, `Cláusula`, `Capítulo`, `Anexo`, `Apéndice`,
+y sus equivalentes en inglés) y usa esos marcadores como bordes
+preferidos del sliding window. Cada chunk se etiqueta con el marcador
+más reciente en `document_chunks.section_ref`, que ahora viaja por el
+RPC y aparece en el header del chunk en el prompt.
 
-Migrar a **chunking semántico**:
+### Pendiente
 
-1. Usar el árbol de encabezados del DOCX/PDF.
-2. Chunkear por sección, con un fallback de tamaño máximo.
-3. Agregar metadata por chunk: `section_path` (ej: "Anexo A → Control
-   A.5.2").
-
-Implementación realista: 1-2 semanas de trabajo.
+- ⚠️ **Tablas y listas** todavía se chunkean como texto plano. Para
+  documentos como GDPR Annex tables, perdemos contexto. Plan futuro:
+  detectar markdown / patrones tabulares en el parser y reservarlos
+  como un solo chunk.
+- ⚠️ **Documentos sin marcadores formales** (NIST AI RMF Playbook,
+  whitepapers) degradan a sliding window con `section_ref = NULL`.
+  Aceptable.
 
 ---
 
-## 6. Sin streaming de respuestas
+## 6. ~~Sin streaming de respuestas~~ (RESUELTO)
 
-### Trade-off
+### Trade-off original
 
-El endpoint `/ai/query` retorna toda la respuesta cuando termina. **No
-hay SSE / streaming**.
-
-- ✅ **Más simple de implementar** y de cachear.
-- ⚠️ **UX subóptima en chat** — el usuario espera 3-8s viendo un spinner
-  en preguntas largas.
+El endpoint `/ai/query` solo retornaba la respuesta completa cuando
+terminaba la generación, dando UX pobre en use cases largos
+(`risk_analysis` 8-20 s, `policy_generation` 20-40 s).
 
 ### Estado
 
-✅ Aceptable para flujos no-conversacionales (risk analysis, policy gen).
-Para chat libre, sería deseable streaming.
+✅ **Resuelto en 2026-04-27.** Ver
+[ADR-014](design_choices.md#adr-014--streaming-sse-via-stream-param).
 
-### Plan
+`POST /ai/query` acepta `"stream": true` en el body y devuelve
+`text/event-stream` con eventos `event: token` por cada delta del LLM,
+cerrando con `event: done` con la metadata. Implementación
+provider-agnostic vía `LLMRouter.stream_route()` y `StreamEvent`
+normalizado.
 
-Endpoint paralelo `/ai/query/stream` con `text/event-stream`. Reusa toda
-la lógica de retrieval; solo cambia el call al LLM (`stream=True`).
+### Pendiente
+
+- `stream + response_mode="structured"` rechazado con 422 (decisión
+  consciente, ver ADR-014).
+- Errores mid-stream se reportan como `event: error` y persisten texto
+  parcial en `traces`.
 
 ---
 
@@ -336,12 +347,12 @@ esto vía `version` — solo es agregar `lang` como columna.
 
 | Trade-off | Severidad | Bloquea producción |
 |---|---|---|
-| 1. pgvector vs dedicated | Bajo | No |
+| 1. pgvector vs dedicated (HNSW activado) | Bajo | No |
 | 2. L3 con regex | Bajo | No |
 | 3. **Stub de auth** | **Alto** | **Sí** |
 | 4. Re-ranker stub | Medio | No |
-| 5. Chunking simple | Medio | No |
-| 6. Sin streaming | Bajo | No |
+| 5. ~~Chunking simple~~ → section-aware | Bajo (residual: tablas) | No |
+| 6. ~~Sin streaming~~ → SSE vía `stream=true` | — | No |
 | 7. Evals heurísticos | Bajo | No |
 | 8. `uploads/` local | Medio | Solo si >1 réplica |
 | 9. Sin caché | Bajo | No |

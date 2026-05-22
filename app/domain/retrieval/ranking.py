@@ -47,6 +47,10 @@ class ChunkResult:
         chunk_index:  Position within the parent document
         similarity:   Cosine similarity score (0.0 to 1.0)
                       Higher = more relevant to the query
+        section_ref:  Most recent legal section marker the chunk belongs
+                      to (e.g. "Articulo 9", "Seccion 6.1.2"). None when
+                      the parent document has no formal markers or the
+                      chunk falls before the first marker.
     """
     chunk_id: str
     document_id: str
@@ -54,40 +58,169 @@ class ChunkResult:
     content: str
     chunk_index: int
     similarity: float
+    section_ref: str | None = None
 
 
-def rerank_chunks(chunks: list[ChunkResult], query: str) -> list[ChunkResult]:
+# ============================================================
+# rerank_chunks — feature-reweighting reranker
+#
+# WHY THIS UPGRADE:
+# The previous implementation was a sort by similarity (which is
+# what pgvector already returned). The spec (Task 6) requires a
+# proper rerank step. We use feature reweighting because it:
+#
+#   - Adds zero new dependencies (no Cohere, no Hugging Face)
+#   - Costs nothing per call
+#   - Combines multiple signals: vector similarity, lexical
+#     overlap with the query, section markers, content length
+#
+# The fused score is:
+#   0.55 * similarity
+# + 0.30 * keyword_overlap(query, chunk)
+# + 0.10 * section_priority
+# + 0.05 * length_quality
+#
+# Tunable in one place. Cross-encoder remains a future option.
+# ============================================================
+import re
+
+# Stop words removed before computing keyword overlap. The list
+# covers common Spanish + English fillers so overlap reflects
+# meaningful tokens.
+_OVERLAP_STOP_WORDS = {
+    # English
+    "the", "a", "an", "is", "are", "of", "to", "in", "on", "for",
+    "and", "or", "but", "with", "at", "by", "from",
+    "what", "which", "how", "who", "why", "when", "where",
+    "i", "you", "we", "they", "it",
+    # Spanish
+    "el", "la", "los", "las", "un", "una", "unos", "unas",
+    "y", "o", "u", "de", "del", "al", "en", "por", "para", "con",
+    "se", "su", "sus", "es", "son", "fue", "fueron", "ha", "han",
+    "que", "como", "cu\u00e1l", "cual", "qu\u00e9", "qu\u00e9", "donde", "d\u00f3nde",
+}
+
+# Section markers that signal high authority (legal articles,
+# regulatory clauses). Chunks that carry one are slightly boosted.
+_AUTHORITY_PATTERNS = re.compile(
+    r"art\u00edculo|articulo|article|secci\u00f3n|seccion|section|clausula|cl\u00e1usula|"
+    r"anexo|annex|capitulo|cap\u00edtulo|chapter|requisito|requirement",
+    re.IGNORECASE,
+)
+
+
+def _tokenize_for_overlap(text: str) -> set[str]:
+    cleaned = re.sub(r"[^\w\s]", " ", text.lower())
+    return {w for w in cleaned.split() if w and w not in _OVERLAP_STOP_WORDS}
+
+
+def _keyword_overlap(query_tokens: set[str], chunk_text: str) -> float:
+    """Jaccard overlap between query tokens and chunk tokens."""
+    if not query_tokens:
+        return 0.0
+    chunk_tokens = _tokenize_for_overlap(chunk_text)
+    if not chunk_tokens:
+        return 0.0
+    intersection = query_tokens & chunk_tokens
+    if not intersection:
+        return 0.0
+    return len(intersection) / len(query_tokens | chunk_tokens)
+
+
+def _section_priority(section_ref: str | None, content: str) -> float:
+    """1.0 when the chunk has a structured section_ref, 0.5 when it
+    mentions an authority marker inline, 0.0 otherwise."""
+    if section_ref:
+        return 1.0
+    if content and _AUTHORITY_PATTERNS.search(content):
+        return 0.5
+    return 0.0
+
+
+def _length_quality(content: str) -> float:
     """
-    Re-rank retrieved chunks by relevance to the query.
+    Penalise extremely short or extremely long chunks. The function
+    peaks around 300-700 characters which is the typical chunk size
+    used by the chunker.
+    """
+    if not content:
+        return 0.0
+    length = len(content)
+    if length < 80:
+        return 0.2
+    if length < 200:
+        return 0.6
+    if length <= 1500:
+        return 1.0
+    if length <= 3000:
+        return 0.7
+    return 0.4
 
-    CURRENT IMPLEMENTATION: Identity function (no re-ranking).
-    Returns chunks sorted by similarity score (highest first).
-    This is already the order returned by pgvector, so this
-    function currently does nothing.
 
-    Future implementation will use a cross-encoder model to
-    re-score each (query, chunk) pair for more accurate ranking.
+def rerank_chunks(
+    query: str,
+    chunks: list[ChunkResult],
+    top_k: int | None = None,
+    *,
+    weight_similarity: float = 0.55,
+    weight_overlap: float = 0.30,
+    weight_section: float = 0.10,
+    weight_length: float = 0.05,
+) -> list[ChunkResult]:
+    """
+    Re-rank chunks by combining multiple features.
+
+    NOTE on the signature: callers in the existing codebase call
+    this function as `rerank_chunks(chunks, query)`. We accept both
+    orders for backward compatibility (we detect which argument is
+    the list and which is the query string).
 
     Args:
-        chunks: List of ChunkResult objects from pgvector search.
-        query:  The original user question (used by cross-encoders).
+        query:             The user question.
+        chunks:            ChunkResult list to rerank.
+        top_k:             Optional truncation. Returns all when None.
+        weight_*:          Linear weights of each feature. Must sum
+                           approximately to 1.0.
 
     Returns:
-        Re-ordered list of chunks (most relevant first).
-
-    TODO: Replace with cross-encoder re-ranking:
-        from sentence_transformers import CrossEncoder
-        model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-        pairs = [[query, chunk.content] for chunk in chunks]
-        scores = model.predict(pairs)
-        ranked = sorted(zip(chunks, scores), key=lambda x: x[1], reverse=True)
-        return [chunk for chunk, score in ranked]
+        Re-ranked list (highest fused score first).
     """
-    # MVP: just sort by similarity score (descending)
-    # The query parameter is intentionally unused until re-ranking is implemented
-    logger.debug(f"Reranking {len(chunks)} chunks (stub: sorting by similarity)")
+    # --- Backward compatibility shim ---
+    # The legacy call pattern is `rerank_chunks(chunks, query)`. If
+    # the first arg is a list and the second is a string, swap them.
+    if isinstance(query, list) and isinstance(chunks, str):
+        query, chunks = chunks, query  # type: ignore[assignment]
 
-    return sorted(chunks, key=lambda c: c.similarity, reverse=True)
+    if not chunks:
+        return []
+
+    query_tokens = _tokenize_for_overlap(query or "")
+
+    enriched: list[tuple[float, ChunkResult]] = []
+    for chunk in chunks:
+        sim = float(chunk.similarity or 0.0)
+        overlap = _keyword_overlap(query_tokens, chunk.content or "")
+        section = _section_priority(chunk.section_ref, chunk.content or "")
+        length = _length_quality(chunk.content or "")
+
+        score = (
+            weight_similarity * sim
+            + weight_overlap * overlap
+            + weight_section * section
+            + weight_length * length
+        )
+        enriched.append((score, chunk))
+
+    enriched.sort(key=lambda pair: pair[0], reverse=True)
+    ranked = [chunk for _s, chunk in enriched]
+    logger.debug(
+        f"Reranked {len(ranked)} chunks "
+        f"(weights sim={weight_similarity}, overlap={weight_overlap}, "
+        f"section={weight_section}, length={weight_length})"
+    )
+    if top_k is not None:
+        return ranked[:top_k]
+    return ranked
 
 
 def apply_per_document_cap(

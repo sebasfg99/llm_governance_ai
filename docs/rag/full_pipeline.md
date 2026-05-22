@@ -79,39 +79,65 @@ El flujo:
 
 Devuelven `(raw_text: str, page_count: int)`.
 
-### 1.3 Chunking
+### 1.3 Chunking section-aware
 
-**Archivo:** `app/domain/documents/chunking.py` — función `chunk_text()`.
+**Archivo:** `app/domain/documents/chunking.py` — funciones
+`chunk_text_with_sections()` y wrapper backward-compatible `chunk_text()`.
 
-**Estrategia: ventana deslizante de tamaño fijo con overlap.**
+**Estrategia: ventana deslizante con preferencia de borde por marcadores
+legales y atribución de `section_ref` por chunk.**
 
-- `chunk_size = 300` palabras (≈ 1 token por palabra es buena aproximación
-  para español/inglés mezclados).
+- `chunk_size = 300` palabras (≈ 1 token por palabra para corpus
+  español/inglés mixto).
 - `chunk_overlap = 30` palabras (10%).
-- Tokenización por espacios (simple pero suficiente para MVP).
+- Tokenización por espacios.
+- **Detección de marcadores** con la regex `_SECTION_MARKER_RE`. Cubre:
+  - Español: `Artículo X`, `Sección X.Y`, `Capítulo III`, `Anexo A`,
+    `Apéndice B`, `Cláusula 6.1.2`.
+  - Inglés: `Article X`, `Section X.Y`, `Chapter III`, `Annex A`,
+    `Appendix B`, `Clause 6.1.2`.
+- **Boundary preference:** cuando el final natural del chunk cae cerca
+  de un marcador (ventana de tolerancia ±20% de `chunk_size`), el
+  chunker corta justo antes del marcador. Esto evita que un chunk
+  contenga partes de dos artículos distintos.
+- **Atribución:** cada chunk se etiqueta con el marcador más reciente
+  que lo precede en el documento. Documentos sin marcadores formales
+  (ej. el NIST AI RMF Playbook) degradan a sliding window puro con
+  `section_ref = None`.
 
-Pseudocódigo:
+Pseudocódigo simplificado:
 
 ```python
+markers = scan_section_markers(text)        # [(word_idx, "Articulo 9"), ...]
 words = text.split()
-step = chunk_size - chunk_overlap   # = 270
+step = chunk_size - chunk_overlap
 
 start = 0
 while start < len(words):
-    end = min(start + chunk_size, len(words))
-    chunks.append(" ".join(words[start:end]))
-    if end == len(words): break
-    start += step
+    target_end = min(start + chunk_size, len(words))
+    snap = find_marker_near(markers, target_end, tolerance=chunk_size // 5)
+    end = snap if snap is not None else target_end
+
+    section_ref = most_recent_marker_before(markers, start)
+    chunks.append(ChunkWithSection(
+        content=" ".join(words[start:end]),
+        section_ref=section_ref,
+    ))
+
+    start = end if snapped else end - chunk_overlap
 ```
 
 **¿Por qué overlap?** Si una idea importante cae justo en el borde de un
-chunk, sin overlap el LLM ve solo media frase. El 10% de solapamiento es un
-compromiso entre cobertura y costo (más overlap = más chunks = más tokens en
-embeddings + más rows en DB).
+chunk, sin overlap el LLM ve solo media frase. El 10% de solapamiento es
+un compromiso entre cobertura y costo (más overlap = más chunks = más
+tokens en embeddings + más rows en DB).
 
-**¿Por qué tamaño fijo y no sentence-aware?** Simplicidad para MVP. Trade-off
-documentado en `tradeoffs.md`. Para mejorar: chunking recursivo por separadores
-(`\n\n`, `. `, `, `) o semantic chunking con sentence embeddings.
+**¿Por qué section-aware?** Las normas son estructuradas por cláusula.
+Sin atribución, el LLM solo puede citar a nivel de documento
+(`[Fuente: ISO42001.pdf]`). Con `section_ref` puede citar a nivel de
+cláusula (`ISO 42001, Cláusula 6.1.2`), que es lo que un equipo de
+compliance espera para sustentar una decisión. Ver
+[ADR-013](../decisions/design_choices.md#adr-013--chunking-section-aware--hnsw).
 
 ### 1.4 Embeddings
 
@@ -149,11 +175,12 @@ insertar una por una):
 chunk_rows = [{
     "document_id": doc_id,
     "tenant_id": tenant_id,
-    "content": chunk_text,
+    "content": chunk.content,
     "chunk_index": idx,
-    "embedding": vector,             # list[float] de 1536
-    "country": doc.country,           # propagado del documento padre
-    "framework": doc.framework,       # propagado del documento padre
+    "section_ref": chunk.section_ref,   # NULL si el doc no tiene marcadores
+    "embedding": vector,                 # list[float] de 1536
+    "country": doc.country,               # propagado del documento padre
+    "framework": doc.framework,           # propagado del documento padre
     "created_at": now,
 } for ...]
 
@@ -183,29 +210,41 @@ CREATE TABLE document_chunks (
     chunk_index INTEGER NOT NULL,
     country     TEXT,
     framework   TEXT,                          -- agregado en migración 004
+    section_ref TEXT,                          -- agregado en migración 005
     embedding   vector(1536),
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_document_chunks_embedding
-    ON document_chunks USING ivfflat (embedding vector_cosine_ops)
-    WITH (lists = 100);
+CREATE INDEX idx_document_chunks_embedding_hnsw
+    ON document_chunks USING hnsw (embedding vector_cosine_ops)
+    WITH (m = 16, ef_construction = 64);
 ```
 
-**Por qué `ivfflat` y no `hnsw`:**
-- `ivfflat` es el índice estándar de pgvector y suficiente para corpus de
-  hasta ~1M vectores con buena recall.
-- `hnsw` daría menos latencia pero requiere más memoria y tunning.
-- `lists = 100` es el default; para >1M vectores subir a 1000.
+**Por qué `hnsw` y no `ivfflat`** (cambio aplicado en migración 005):
 
-**Cosine similarity** se elige sobre L2 porque es invariante a magnitud — los
-embeddings de OpenAI no están normalizados a la misma magnitud, y coseno mide
-ángulo, no distancia absoluta.
+- `hnsw` ofrece **mejor recall a igual latencia** que `ivfflat` para
+  búsquedas aproximadas, especialmente cuando el query cae lejos del
+  centroide más cercano de los clusters de `ivfflat`.
+- El costo es solo en build inicial (más lento) y memoria del proceso
+  Postgres. Para corpus de gobernanza con lenguaje técnico denso, el
+  trade-off vale la pena.
+- `m = 16` y `ef_construction = 64` son los defaults recomendados de
+  pgvector para uso general.
+- Tuning runtime: cada RPC ejecuta `SET LOCAL hnsw.ef_search = 100`
+  para igualar la profundidad de búsqueda que veníamos usando con
+  `ivfflat.probes = 100`. Subir a 200 si se observa caída de recall.
+
+Ver [ADR-013](../decisions/design_choices.md#adr-013--chunking-section-aware--hnsw).
+
+**Cosine similarity** se elige sobre L2 porque es invariante a magnitud
+— los embeddings de OpenAI no están normalizados a la misma magnitud,
+y coseno mide ángulo, no distancia absoluta.
 
 ### RPCs `match_chunks` y `match_global_chunks`
 
-Definidas en migraciones 001 y actualizadas en 004 para soportar
-`framework_filter`. Ejemplo simplificado:
+Definidas en migración 001, ampliadas en 004 (`framework_filter`) y
+recreadas en 005 para devolver `section_ref` y usar `hnsw.ef_search`
+en lugar de `ivfflat.probes`. Ejemplo simplificado del shape actual:
 
 ```sql
 CREATE OR REPLACE FUNCTION match_chunks(
@@ -215,10 +254,16 @@ CREATE OR REPLACE FUNCTION match_chunks(
     match_frameworks  text[] DEFAULT NULL
 ) RETURNS TABLE (
     id UUID, document_id UUID, tenant_id text,
-    content text, chunk_index int, similarity float
+    content text, chunk_index int,
+    section_ref text,                                 -- nuevo en 005
+    similarity float
 )
-LANGUAGE sql STABLE AS $$
+LANGUAGE plpgsql VOLATILE AS $$
+BEGIN
+  SET LOCAL hnsw.ef_search = 100;                     -- nuevo en 005
+  RETURN QUERY
   SELECT id, document_id, tenant_id, content, chunk_index,
+         section_ref,
          1 - (embedding <=> query_embedding) AS similarity
   FROM document_chunks
   WHERE tenant_id = match_tenant_id
@@ -227,6 +272,7 @@ LANGUAGE sql STABLE AS $$
          OR framework IS NULL)
   ORDER BY embedding <=> query_embedding
   LIMIT match_count;
+END;
 $$;
 ```
 
@@ -505,11 +551,11 @@ chunks pertenecen a ISO 42001** para satisfacer la regla de citación
 
 Documentos recuperados:            (RAG output)
 ==================================================
-[Chunk 1 | Fuente: ISO42001_Replica.pdf | Framework: iso_42001 | similarity: 0.621]
+[Chunk 1 | Fuente: ISO42001_Replica.pdf | Section: Cláusula 6.1.2 | Framework: iso_42001 | similarity: 0.621]
 ...contenido del chunk...
 
 [Chunk 2 | Fuente: AI_RMF_Playbook.pdf | Framework: nist_airmf | similarity: 0.611]
-...
+...                                  (Section: se omite porque el playbook no usa marcadores formales)
 ==================================================
 
 ═══ CONVERSACIÓN RECIENTE ═══      (solo si thread_messages)
@@ -526,6 +572,7 @@ Pregunta del usuario: <safe_query>
 | Campo | Origen | Para qué sirve |
 |---|---|---|
 | `Fuente: <filename>` | `documents.filename` | Permite al modelo cumplir la regla `[Fuente: ...]` del system prompt al citar. |
+| `Section: <ref>` | `document_chunks.section_ref` (poblado por el chunker section-aware en migración 005) | Permite al modelo citar a nivel de cláusula (`ISO 42001, Cláusula 6.1.2`) en lugar de solo a nivel de documento. Se omite si el documento no tiene marcadores formales (NIST Playbook, whitepapers, etc.). |
 | `Framework: <slug>` | `documents.framework` | Permite al modelo distinguir ISO 42001 vs NIST vs EU AI Act cuando varios marcos aplican. Se omite si la columna es `NULL` (documentos framework-agnostic). |
 | `similarity: <float>` | RPC pgvector | Útil para inspección humana del trace; el modelo lo ignora en la práctica. |
 
@@ -545,7 +592,8 @@ conocimiento de entrenamiento.
 
 ## 8. Generación
 
-El prompt completo entra a `LLMRouter.route()`. Para `gpt-4o-mini`:
+El prompt completo entra a `LLMRouter.route()` (modo bloqueante) o a
+`LLMRouter.stream_route()` (modo streaming, ver §8.bis). Para `gpt-4o-mini`:
 
 - `temperature` se queda en el default del modelo (no lo seteamos
   explícitamente; el router pasa solo `model` y `messages`).
@@ -554,6 +602,82 @@ El prompt completo entra a `LLMRouter.route()`. Para `gpt-4o-mini`:
   por instrucciones en el prompt, no por function calling).
 
 Latencia típica: 1–3 s para `chatbot`, 8–20 s para `risk_analysis`.
+
+---
+
+## 8.bis Streaming SSE
+
+**Archivos:**
+- `app/domain/llm/openai_client.py` — `OpenAIClient.stream_generate()`.
+- `app/domain/llm/gemini_client.py` — `GeminiClient.stream_generate()`.
+- `app/domain/llm/router.py` — `LLMRouter.stream_route()`.
+- `app/domain/ai_service.py` — `AIService.query_stream()`.
+- `app/api/routes/ai.py` — devuelve `StreamingResponse` cuando
+  `request.stream=True`.
+
+**Activación:** el cliente envía `{"stream": true, ...}` en el body de
+`POST /ai/query`. El validador del schema rechaza con 422 cualquier
+combinación con `response_mode="structured"` (streaming JSON parcial no
+es parseable y no aporta UX).
+
+**Flujo:**
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client
+    participant Endpoint as /ai/query
+    participant AI as AIService.query_stream
+    participant Router as LLMRouter.stream_route
+    participant LLM
+    participant DB
+
+    Client->>Endpoint: POST stream=true
+    Endpoint->>AI: query_stream(request)
+    AI->>AI: _prepare_pipeline (idéntico a query)
+    AI->>Router: stream_route(LLMRequest)
+    Router->>LLM: chat.completions.create stream=True
+    loop Por cada token
+        LLM-->>Router: delta.content
+        Router-->>AI: StreamEvent(token)
+        AI-->>Endpoint: SSE event token
+        Endpoint-->>Client: data: {"text": "..."}
+    end
+    LLM-->>Router: final usage chunk
+    Router-->>AI: StreamEvent(done) con metrics
+    AI->>DB: persist trace + thread + eval
+    AI-->>Endpoint: SSE event done con trace_id
+    Endpoint-->>Client: data: {"trace_id": "...", "latency_ms": ...}
+```
+
+**Formato SSE emitido:**
+
+```
+event: token
+data: {"text": "Hola"}
+
+event: token
+data: {"text": " mundo"}
+
+event: done
+data: {"trace_id":"...", "thread_id":"...", "latency_ms":1842, ...}
+```
+
+**Caveats decididos en [ADR-014](../decisions/design_choices.md#adr-014--streaming-sse-via-stream-param):**
+
+1. **`stream=true + response_mode="structured"` → 422.** El validador
+   de Pydantic rechaza la combinación antes de que el pipeline arranque.
+2. **Tracing al cierre del stream**, no por chunk. El orquestador
+   acumula el texto server-side mientras lo emite y persiste el trace
+   completo cuando recibe el `StreamEvent(type="done")`.
+3. **`latency_ms` viaja en el evento final `done`**, no en headers HTTP
+   (el body ya no es un objeto único).
+4. **Errores mid-stream** se emiten como un `event: error` y luego se
+   intenta persistir el texto parcial en `traces` con un flag de
+   `completed=false` en el evento `done`.
+5. **Headers anti-buffering** (`Cache-Control: no-cache`,
+   `X-Accel-Buffering: no`, `Connection: keep-alive`) los setea el
+   endpoint para que Nginx / Cloud Run no retengan el stream.
 
 ---
 

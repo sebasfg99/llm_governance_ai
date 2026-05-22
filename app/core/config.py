@@ -133,6 +133,54 @@ class Settings(BaseSettings):
     # between Spanish queries and English documents (OWASP, ISO, etc.).
     retrieval_multilingual: bool = True
 
+    # Hybrid retrieval (vector + keyword via tsvector + RRF). Requires
+    # migration 006_rag_governance.sql to be applied. Defaults to False
+    # so existing deployments keep working without forcing the migration.
+    # Set RETRIEVAL_USE_HYBRID=true in the environment to enable.
+    retrieval_use_hybrid: bool = False
+
+    # ----------------------------------------------------------
+    # Governance / evaluation settings
+    # ----------------------------------------------------------
+
+    # Whether to run the LLM-as-judge for every response. When False,
+    # only the heuristic graders run and context_adherence_score falls
+    # back to the Jaccard grounding proxy. Useful to disable in tests
+    # or to halve the eval cost in dev environments.
+    eval_use_llm_judge: bool = True
+
+    # Threshold below which response_risk flags HIGH risk on context
+    # adherence. The same value is used by validate_response_guardrails
+    # when strict_context=True (legal/compliance use cases).
+    governance_strict_context_threshold: float = 0.7
+
+    # ----------------------------------------------------------
+    # Context window management
+    # ----------------------------------------------------------
+
+    # Total context window size for the configured model (tokens).
+    # gpt-4o-mini: 128 000 | gpt-4o: 128 000 | gemini-1.5-flash: 1 000 000
+    # Set this to match the model in llm_default_model.
+    context_window_tokens: int = 128_000
+
+    # Tokens to reserve for the model's output (completion).
+    # This is subtracted from context_window_tokens to derive the input budget.
+    # Must match or exceed max_tokens in the LLM clients (currently hardcoded 2048).
+    reserved_output_tokens: int = 2_048
+
+    # Soft cap (tokens) for conversation history included in the prompt.
+    # Token-aware history selection discards oldest turns first when over budget.
+    max_history_tokens: int = 2_000
+
+    # Soft cap (tokens) for reasoning traces (L3 memory, why-queries only).
+    max_trace_tokens: int = 1_000
+
+    # Master switch for token-aware context budget enforcement.
+    # When False (default), behavior is identical to the current implementation.
+    # Set to True in staging/production once token logging (Phase 2) has been
+    # validated and golden-fixture tests pass.
+    context_budget_enabled: bool = False
+
     # ----------------------------------------------------------
     # Application settings
     # ----------------------------------------------------------

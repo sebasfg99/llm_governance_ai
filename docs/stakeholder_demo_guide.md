@@ -108,12 +108,8 @@ POST /ai/query
 
 Body de ejemplo:
 ```json
-{
-  "query": "Que controles exige ISO 42001 para sistemas de IA de alto riesgo?",
-  "use_case": "chatbot",
-  "tenant_id": "dev-tenant",
-  "top_k": 5
-}
+
+
 ```
 
 Que verificar en la respuesta:

@@ -29,6 +29,11 @@
 # TODO: Consider connection pooling for high-traffic production use
 # ============================================================
 
+import json
+import socket
+import time
+from urllib.parse import urlparse
+
 from supabase import create_client, Client
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -86,6 +91,42 @@ def get_supabase_client() -> Client:
             supabase_url=settings.supabase_url,
             supabase_key=settings.supabase_service_key,
         )
+
+        # #region agent log
+        _dbg_host = urlparse(settings.supabase_url).hostname or ""
+        _dbg_dns: dict[str, object] = {"ok": False}
+        try:
+            socket.getaddrinfo(_dbg_host, 443, type=socket.SOCK_STREAM)
+            _dbg_dns["ok"] = True
+        except OSError as _e:
+            _dbg_dns["error"] = f"{type(_e).__name__}:{getattr(_e, 'errno', None)}"
+        try:
+            with open(
+                "/Users/sebas/Documents/projects/llm_ai_governance_project/.cursor/debug-e21e89.log",
+                "a",
+                encoding="utf-8",
+            ) as _df:
+                _df.write(
+                    json.dumps(
+                        {
+                            "sessionId": "e21e89",
+                            "hypothesisId": "H1",
+                            "location": "supabase.py:get_supabase_client",
+                            "message": "supabase_init_dns",
+                            "data": {
+                                "settings_host": _dbg_host,
+                                "host_len": len(_dbg_host),
+                                "dns": _dbg_dns,
+                                "rest_url_host": urlparse(str(_client.rest_url)).hostname,
+                            },
+                            "timestamp": int(time.time() * 1000),
+                        }
+                    )
+                    + "\n"
+                )
+        except OSError:
+            pass
+        # #endregion
 
         logger.info(f"Supabase client initialized for: {settings.supabase_url}")
 

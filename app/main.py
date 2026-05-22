@@ -34,6 +34,7 @@ from app.api.routes import (
     evals,
     feedback,
     health,
+    metrics,
     policies,
     projects,
     prompts,
@@ -140,6 +141,10 @@ app.include_router(risk.router, prefix="/risk", tags=["Risk"])
 # POST /policies/{project_id}/generate
 # POST /policies/{project_id}/controls
 app.include_router(policies.router, prefix="/policies", tags=["Policies"])
+
+# --- Metrics: aggregated RAG governance metrics ---
+# GET /metrics/rag
+app.include_router(metrics.router, prefix="/metrics", tags=["Metrics"])
 
 
 # ============================================================

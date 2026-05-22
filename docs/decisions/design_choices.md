@@ -461,6 +461,146 @@ versión 4, en la tabla `prompts`. Cambios principales sobre v3:
 
 ---
 
+## ADR-013 — Chunking section-aware + HNSW
+
+### Contexto
+
+Dos limitaciones quedaban en el pipeline de RAG después de las ADRs
+011 y 012:
+
+1. **Citaciones a nivel de documento, no de cláusula.** El header de
+   los chunks incluía `[Fuente: ISO42001.pdf]` pero no la cláusula
+   específica. El equipo de compliance espera respuestas que citen
+   "ISO 42001, Cláusula 6.1.2", no "ISO 42001". Sin un campo
+   `section_ref` por chunk, esa precisión es imposible: el LLM
+   alucinaría números de cláusula en lugar de leerlos del contexto.
+2. **Índice `ivfflat`** con `lists=100` y `probes=100`. Funcional pero
+   con recall inferior a HNSW para queries que caen entre centroides
+   de cluster. En un corpus normativo donde los queries muchas veces
+   son específicos ("¿qué dice el Artículo 9 sobre evaluación de
+   riesgos?"), perder un chunk relevante por la geometría del índice
+   es costoso.
+
+Análisis comparativo con Verita One reveló que ese sistema ya hacía
+ambas cosas: tagging por `section_ref` durante el chunking y HNSW como
+índice por defecto. Ver
+[`docs/rag/full_pipeline.md#13-chunking-section-aware`](../rag/full_pipeline.md#13-chunking-section-aware).
+
+### Decisión
+
+Migración SQL `005_section_ref_hnsw.sql` consolidada en tres cambios:
+
+1. **Columna `section_ref TEXT` en `document_chunks`.**
+2. **Índice HNSW** (`m = 16`, `ef_construction = 64`) reemplazando al
+   IVFFlat.
+3. **RPCs `match_chunks` / `match_global_chunks` recreados** para
+   devolver `section_ref` y usar `SET LOCAL hnsw.ef_search = 100`.
+
+Cambios de código asociados:
+
+- `app/domain/documents/chunking.py`: `chunk_text_with_sections()`
+  detecta marcadores legales (regex multi-idioma: `Artículo`,
+  `Sección`, `Cláusula`, `Capítulo`, `Anexo`, `Apéndice`, `Article`,
+  `Section`, etc.). El sliding window prefiere cortar justo antes de
+  un marcador cuando está cerca del `chunk_size` target, y cada chunk
+  se etiqueta con el marcador más reciente que lo precede.
+- `app/domain/retrieval/ranking.py`: `ChunkResult` gana
+  `section_ref: str | None`.
+- `app/domain/ai_service.py`: `_assemble_prompt()` agrega
+  `Section: <ref>` al header de cada chunk cuando está presente.
+- `scripts/seed_documents.py --force`: re-procesa todo el corpus con
+  el chunker section-aware.
+
+### Alternativas consideradas
+
+| Alternativa | Por qué se descartó |
+|---|---|
+| **First-marker chunking** (regex sobre el chunk ya cortado, agarrar el primer marcador) | Implementación trivial pero produce atribuciones incorrectas cuando un chunk cruza fronteras de sección. Inaceptable para citas regulatorias. |
+| **Last-seen chunking** (mantener "last marker seen" durante el sliding window, sin preferir bordes) | Mejora la atribución pero los chunks siguen straddleando secciones. Compromiso intermedio rechazado por el costo extra de robustez del modelo. |
+| **Mantener `ivfflat` y solo agregar `section_ref`** | Habría dejado el upgrade de retrieval para una migración futura, mientras que la 005 ya tocaba `document_chunks` y los RPCs. Costo marginal mínimo de combinarlos. |
+| **Usar `text-embedding-3-large` (3072 dims)** | Mejora de recall ortogonal, pero requiere reindexar todo el corpus con un costo de embeddings ~6× mayor. Fuera de scope para este sprint. |
+
+### Consecuencias
+
+- ✅ **Citas a nivel de cláusula**: el LLM responde con
+  `"ISO 42001, Cláusula 6.1.2"` en lugar de `"ISO 42001.pdf"`.
+- ✅ **Mejor recall** para queries específicos al precio de un build
+  inicial de índice más lento (aceptable en ventana de mantenimiento).
+- ✅ **Compatibilidad regresiva**: `chunk_text(text)` sigue existiendo
+  como wrapper. Tests previos pasan sin cambios.
+- ⚠️ **Re-procesamiento obligatorio** de los 20 documentos del corpus
+  (~30-60 min, ~$0.50-2 USD en embeddings). Se ejecuta vía
+  `scripts/seed_documents.py --force` después de aplicar la SQL.
+- ⚠️ **`hnsw.ef_search = 100`** está calibrado para el corpus actual.
+  Si QA detecta caída de recall después del cambio, subir a 200.
+
+---
+
+## ADR-014 — Streaming SSE vía `stream` param
+
+### Contexto
+
+Use cases largos (`risk_analysis` 8-20 s, `policy_generation` 20-40 s)
+producen una experiencia de usuario pobre en modo bloqueante: el
+cliente ve una pantalla en blanco durante decenas de segundos antes
+de recibir la respuesta completa. Verita One resuelve esto con
+streaming SSE token a token. Como nuestro `LLMRouter` ya abstrae los
+providers, agregar streaming es un cambio relativamente contenido.
+
+La pregunta era cómo exponerlo en la API sin romper a los clientes
+existentes.
+
+### Decisión
+
+Agregar un campo `stream: bool` al body de `POST /ai/query`.
+
+- `stream=false` (default): comportamiento actual sin cambios.
+  Devuelve `application/json` con `AIQueryResponse`.
+- `stream=true`: la respuesta es `text/event-stream`. Eventos
+  `event: token` con `data: {"text": "..."}` por cada delta del LLM,
+  cerrando con `event: done` con la metadata que el modo bloqueante
+  devolvía en el body.
+
+Restricciones:
+
+- **`stream=true + response_mode="structured"` → 422.** Streaming JSON
+  parcial no es parseable y no aporta UX. El validador Pydantic rechaza
+  la combinación antes del pipeline.
+- **Tracing al cierre del stream**, no por chunk. El orquestador
+  acumula el texto server-side mientras lo emite y persiste el trace
+  + thread + evaluation cuando recibe el `StreamEvent(type="done")`.
+- **`latency_ms` viaja en el evento `done`**, no en headers HTTP, porque
+  el body ya no es un objeto único.
+
+### Alternativas consideradas
+
+| Alternativa | Por qué se descartó |
+|---|---|
+| **Endpoint nuevo `POST /ai/query/stream`** | Duplica superficie de API. Cada endpoint requeriría su propia lógica de guardrails, tracing, evaluations, memoria L1/L2/L3. El campo `stream` en el body es paralelo al patrón existente de `response_mode`. |
+| **Negociación por `Accept: text/event-stream`** | Más REST-purista, pero la API ya usa el body para otros flags (`response_mode`); mezclar paradigmas sería disonante. Además es más difícil de probar desde un browser sin setear headers a mano. |
+| **Convertir `/ai/query` a streaming siempre** | Breaking change. El frontend, los tests existentes y los scripts dejarían de funcionar. Inaceptable. |
+| **Permitir `stream + structured`** (un solo evento JSON al final) | Confunde semánticamente: "stream" sin streaming real. El cliente ya tiene que esperar el JSON completo, así que mejor que use el modo bloqueante. |
+| **Trazado por chunk (granular)** | Más caro y más ruidoso (N rows en `traces` por respuesta). El trazado al cierre captura el mismo input/output con un solo write. |
+
+### Consecuencias
+
+- ✅ **UX dramáticamente mejor** en use cases largos: el usuario ve
+  actividad inmediata.
+- ✅ **Sin breaking changes** para clientes que no usan el flag.
+- ✅ **Una sola lógica de orquestación** (`_prepare_pipeline()`
+  compartido entre `query()` y `query_stream()`).
+- ✅ **Provider-agnostic**: tanto OpenAI como Gemini implementan
+  `stream_generate()` y emiten el mismo `StreamEvent` normalizado.
+- ⚠️ **Errores mid-stream** se reportan como `event: error` y luego un
+  `done` con `completed: false`. El cliente debe manejarlos —
+  documentado en `docs/api/ai.md`.
+- ⚠️ **Conexiones HTTP más largas**. Asegurar que el deployment (Nginx,
+  Cloud Run) tiene `proxy_buffering off` o equivalente; el endpoint
+  setea `Cache-Control: no-cache` y `X-Accel-Buffering: no` para
+  ayudar.
+
+---
+
 ## Cómo agregar una nueva ADR
 
 1. Copia el formato de cualquier ADR existente.

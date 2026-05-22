@@ -35,7 +35,7 @@ from app.domain.documents.models import Document, DocumentChunk, DocumentStatus,
 from app.domain.documents.parser_pdf import parse_pdf
 from app.domain.documents.parser_docx import parse_docx
 from app.domain.documents.parser_txt import parse_txt
-from app.domain.documents.chunking import chunk_text
+from app.domain.documents.chunking import chunk_text_with_sections
 from app.domain.documents.embeddings import embed_texts
 
 # Logger for this module
@@ -223,19 +223,27 @@ class DocumentService:
 
             logger.debug(f"Parsed {len(raw_text)} characters from {doc.filename}")
 
-            # --- Step 2: Split text into chunks ---
-            chunks_text = chunk_text(raw_text)
-            chunk_count = len(chunks_text)
+            # --- Step 2: Split text into section-aware chunks ---
+            # The chunker emits ChunkWithSection NamedTuples carrying the
+            # nearest legal marker (Articulo / Seccion / Clausula / ...)
+            # for each chunk. Documents without markers degrade to plain
+            # sliding window with section_ref = None.
+            chunks_with_sections = chunk_text_with_sections(raw_text)
+            chunk_count = len(chunks_with_sections)
 
             if chunk_count == 0:
                 raise DocumentProcessingError("Document produced no text chunks after parsing")
 
-            logger.debug(f"Split into {chunk_count} chunks")
+            logger.debug(
+                f"Split into {chunk_count} chunks "
+                f"({sum(1 for c in chunks_with_sections if c.section_ref)} with section_ref)"
+            )
 
             # --- Step 3: Generate embeddings for all chunks ---
             # This makes one API call to OpenAI with all chunks batched
             logger.debug(f"Generating embeddings for {chunk_count} chunks...")
-            embeddings = embed_texts(chunks_text)
+            chunk_texts = [c.content for c in chunks_with_sections]
+            embeddings = embed_texts(chunk_texts)
 
             # Sanity check: one embedding per chunk
             if len(embeddings) != chunk_count:
@@ -255,15 +263,16 @@ class DocumentService:
                 {
                     "document_id": str(document_id),
                     "tenant_id": tenant_id,
-                    "content": chunk_text_item,
+                    "content": chunk.content,
                     "chunk_index": idx,
+                    "section_ref": chunk.section_ref,  # NULL when no marker present
                     "embedding": embedding,  # List of 1536 floats
                     "country": doc.country,     # Propagated from parent document
                     "framework": doc.framework, # Propagated from parent document
                     "created_at": now,
                 }
-                for idx, (chunk_text_item, embedding) in enumerate(
-                    zip(chunks_text, embeddings)
+                for idx, (chunk, embedding) in enumerate(
+                    zip(chunks_with_sections, embeddings)
                 )
             ]
 

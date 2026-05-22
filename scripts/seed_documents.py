@@ -24,9 +24,22 @@
 # With a custom folder:
 #   PYTHONPATH=. python scripts/seed_documents.py --folder /path/to/docs
 #
+# To re-chunk every existing document with the section-aware
+# chunker (required after migration 005):
+#   PYTHONPATH=. python scripts/seed_documents.py --force
+#
 # This script is idempotent — safe to run multiple times.
 # Files already processed (status='ready') with the same filename
-# and country are skipped.
+# and country are skipped unless --force is set.
+#
+# PREREQUISITES FOR --force AFTER MIGRATION 005:
+#   1. Run app/db/migrations/005_section_ref_hnsw.sql in Supabase
+#      (adds section_ref column, drops the ivfflat index, creates
+#      the HNSW index, recreates match_chunks/match_global_chunks).
+#   2. Then run this script with --force. The DocumentService will
+#      use chunk_text_with_sections() and persist section_ref for
+#      every chunk, so the LLM's chunk header gains the
+#      "Section: <ref>" attribution.
 # ============================================================
 
 import sys

@@ -20,6 +20,10 @@
 # active version.
 # ============================================================
 
+import json
+import time
+from urllib.parse import urlparse
+
 from supabase import Client
 
 from app.core.logging import get_logger
@@ -78,6 +82,34 @@ class PromptService:
             Falls back to DEFAULT_SYSTEM_PROMPT if none found.
         """
         logger.debug(f"Fetching active prompt for use_case='{use_case}'")
+
+        # #region agent log
+        try:
+            _pu = str(self.db.postgrest.session.base_url)
+            with open(
+                "/Users/sebas/Documents/projects/llm_ai_governance_project/.cursor/debug-e21e89.log",
+                "a",
+                encoding="utf-8",
+            ) as _df:
+                _df.write(
+                    json.dumps(
+                        {
+                            "sessionId": "e21e89",
+                            "hypothesisId": "H3",
+                            "location": "prompts/service.py:get_active_prompt",
+                            "message": "pre_execute_httpx_base_url",
+                            "data": {
+                                "httpx_base_url": _pu,
+                                "httpx_host": urlparse(_pu).hostname,
+                            },
+                            "timestamp": int(time.time() * 1000),
+                        }
+                    )
+                    + "\n"
+                )
+        except OSError:
+            pass
+        # #endregion
 
         result = (
             self.db.table("prompts")

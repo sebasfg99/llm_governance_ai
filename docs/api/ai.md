@@ -52,6 +52,7 @@ Authorization: Bearer <token>
   "top_k": 5,                          // 1..20, chunks a recuperar
   "include_global": true,               // buscar en biblioteca global (tenant=global)
   "response_mode": "text",              // "text" o "structured" (JSON)
+  "stream": false,                      // true => respuesta SSE token a token
   "country": "costa-rica",              // opcional, filtra retrieval por país
   "project_id": "uuid",                 // opcional, hidrata memoria L2
   "thread_id": "uuid",                  // opcional, continúa conversación L1
@@ -68,6 +69,7 @@ Authorization: Bearer <token>
 | `top_k` | int | 5 | Cuántos chunks pasar al LLM. Más = más contexto pero más tokens. |
 | `include_global` | bool | true | Si `false`, solo busca en los documentos del tenant. |
 | `response_mode` | enum | `text` | `text` devuelve prosa; `structured` devuelve un JSON con `answer`, `citations`, `confidence`. |
+| `stream` | bool | false | Si `true`, la respuesta llega como Server-Sent Events (`text/event-stream`). **Incompatible con `response_mode="structured"`** (devuelve 422). Ver [Streaming SSE](#streaming-sse). |
 | `country` | string | null | Slug de país (ej. `costa-rica`, `panama`). Restringe los chunks `country=NULL` + el país pedido. |
 | `project_id` | UUID | null | Si se pasa, el orquestador inyecta un bloque “Memoria del proyecto” en el prompt. |
 | `thread_id` | UUID | null | Continúa una conversación existente. Si se omite y el `use_case` es conversacional (`chatbot`, `risk_intake`, `policy_generation`), el servidor crea un thread nuevo. |
@@ -130,15 +132,23 @@ le instruye devolver un objeto de fallback con `confidence="low"`.
 ## Citaciones y atribución de fuente
 
 Antes de pasar los chunks al LLM, el orquestador hidrata `{filename,
-framework}` para cada `document_id` y los inyecta en el prompt como:
+framework}` para cada `document_id` y los inyecta en el prompt junto al
+`section_ref` que el chunker section-aware tagueó en cada chunk:
 
 ```
-[Chunk N | Fuente: <filename> | Framework: <slug> | similarity: <float>]
+[Chunk N | Fuente: <filename> | Section: <ref> | Framework: <slug> | similarity: <float>]
 ```
+
+`Section:` se omite cuando el documento no tiene marcadores formales
+(ej. el NIST AI RMF Playbook). `Framework:` se omite cuando el documento
+es framework-agnostic (`framework=NULL`).
 
 Esto permite que el modelo:
 
 - Cumpla la regla `[Fuente: <documento>]` del system prompt al citar.
+- Cite **a nivel de cláusula** (`ISO 42001, Cláusula 6.1.2`) cuando el
+  chunk pertenece a una sección formal — ver
+  [ADR-013](../decisions/design_choices.md#adr-013--chunking-section-aware--hnsw).
 - Distinga ISO 42001 vs NIST vs EU AI Act cuando varios marcos aplican.
 - Evite refusals falsos en preguntas específicas de framework.
 
@@ -156,6 +166,118 @@ y en las
 [ADR-011](../decisions/design_choices.md#adr-011--atribución-de-fuente-en-chunks)
 /
 [ADR-012](../decisions/design_choices.md#adr-012--prompt-v4-del-chatbot-con-inferencia-semántica).
+
+---
+
+## Streaming SSE
+
+Pasar `"stream": true` en el body cambia el `Content-Type` de la
+respuesta de `application/json` a `text/event-stream`. Los tokens del
+LLM llegan a medida que se generan, lo que mejora la percepción de
+latencia para `risk_analysis` y `policy_generation` (que tardan 8-40 s
+en modo bloqueante).
+
+### Formato de los eventos
+
+```
+event: token
+data: {"text": "Hola"}
+
+event: token
+data: {"text": " mundo"}
+
+event: token
+data: {"text": "."}
+
+event: done
+data: {"trace_id":"...","thread_id":"...","project_id":null,
+       "model_provider":"openai","model_name":"gpt-4o-mini",
+       "latency_ms":1842,"use_case":"chatbot",
+       "retrieved_chunk_count":5,
+       "retrieved_chunks":[{"chunk_id":"...","section_ref":"Cláusula 6.1.2", ...}],
+       "used_reasoning_memory":false,"completed":true}
+```
+
+- Cada `event: token` empuja un fragmento incremental del texto. El
+  cliente debe **concatenarlos en orden** para reconstruir la
+  respuesta.
+- El `event: done` cierra el stream y trae la metadata que el modo
+  bloqueante devolvía en el body JSON (`trace_id`, `latency_ms`, los
+  chunks recuperados, etc.).
+- Si la generación falla a mitad de stream, el servidor emite
+  `event: error` con `{"message": "...", "detail": "..."}` antes del
+  `done` (que llega con `completed: false`).
+
+### Reglas y compatibilidad
+
+- **`stream=true` con `response_mode="structured"` → 422.** Streaming
+  JSON parcial no es parseable y no aporta UX. El validador del schema
+  rechaza la combinación antes del pipeline.
+- **`stream=false` (default)** mantiene el contrato JSON tradicional.
+  Los clientes existentes no necesitan cambios.
+- **Tracing y evaluations** se ejecutan al cierre del stream con el
+  texto completo acumulado server-side, igual que en modo bloqueante.
+
+### Ejemplo curl
+
+`curl -N` desactiva el buffer del cliente para que veas los eventos
+llegar en tiempo real:
+
+```bash
+curl -N -X POST http://localhost:8000/ai/query \
+  -H 'Authorization: Bearer dev-token' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "query": "¿Qué dice ISO 42001 sobre el análisis de riesgos de IA?",
+    "use_case": "chatbot",
+    "stream": true,
+    "framework_filter": ["iso_42001"]
+  }'
+```
+
+### Ejemplo JavaScript (browser / Next.js)
+
+```javascript
+const response = await fetch("/ai/query", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    query: "¿Qué dice ISO 42001 sobre el análisis de riesgos?",
+    use_case: "chatbot",
+    stream: true,
+  }),
+});
+
+const reader = response.body.getReader();
+const decoder = new TextDecoder();
+let buffer = "";
+
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+  buffer += decoder.decode(value, { stream: true });
+
+  // SSE separa eventos con "\n\n"
+  const events = buffer.split("\n\n");
+  buffer = events.pop() ?? "";
+
+  for (const evt of events) {
+    const eventLine = evt.match(/^event:\s*(\S+)/m)?.[1];
+    const dataLine = evt.match(/^data:\s*(.+)$/m)?.[1];
+    if (!eventLine || !dataLine) continue;
+    const payload = JSON.parse(dataLine);
+
+    if (eventLine === "token") appendToUI(payload.text);
+    if (eventLine === "done") finalizeUI(payload);  // payload.trace_id, payload.latency_ms, ...
+    if (eventLine === "error") showError(payload);
+  }
+}
+```
+
+Detalle completo en
+[`../rag/full_pipeline.md#8bis-streaming-sse`](../rag/full_pipeline.md#8bis-streaming-sse)
+y la decisión de diseño en
+[ADR-014](../decisions/design_choices.md#adr-014--streaming-sse-via-stream-param).
 
 ---
 

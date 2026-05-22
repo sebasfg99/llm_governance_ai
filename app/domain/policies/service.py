@@ -340,6 +340,7 @@ class PoliciesService:
                     response_text=llm_response.text,
                     response_mode="structured",
                     latency_ms=llm_response.latency_ms,
+                    risk_level="medium",
                 )
             )
             return str(trace.id)

@@ -26,11 +26,14 @@
 # ============================================================
 
 import time
+from typing import Iterator
+
 import openai as openai_sdk
 
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.errors import UpstreamError
+from app.domain.llm.models import StreamEvent
 
 logger = get_logger(__name__)
 
@@ -160,3 +163,101 @@ class OpenAIClient:
         )
 
         return response_text, latency_ms, prompt_tokens, completion_tokens
+
+    # ----------------------------------------------------------
+    # Streaming variant
+    #
+    # OpenAI returns server-sent events when the request includes
+    # stream=True. Each chunk has a delta.content fragment; the
+    # final chunk includes finish_reason and (when stream_options
+    # is set) usage statistics. We yield StreamEvent instances and
+    # terminate with a "done" event carrying latency + token
+    # counts. The caller is responsible for buffering the full
+    # text if it needs to persist a trace.
+    # ----------------------------------------------------------
+    def stream_generate(
+        self,
+        prompt: str,
+        model: str | None = None,
+        temperature: float = 0.2,
+        max_tokens: int = 2048,
+    ) -> Iterator[StreamEvent]:
+        model = model or settings.llm_default_model
+
+        logger.debug(f"Streaming OpenAI model={model}, temperature={temperature}")
+        start_time = time.time()
+
+        try:
+            stream = self._client.chat.completions.create(
+                model=model,
+                messages=[{"role": "system", "content": prompt}],
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True,
+                # Ask OpenAI to emit a final usage chunk so the
+                # done event can carry token counts. Older models
+                # may ignore this option silently — we tolerate
+                # missing usage by letting the values stay None.
+                stream_options={"include_usage": True},
+            )
+        except openai_sdk.AuthenticationError as e:
+            raise UpstreamError(
+                "OpenAI authentication failed. Check your OPENAI_API_KEY.",
+                detail={"provider": "openai", "error": str(e)},
+            )
+        except openai_sdk.RateLimitError as e:
+            raise UpstreamError(
+                "OpenAI rate limit exceeded. Try again in a moment.",
+                detail={"provider": "openai", "error": str(e)},
+            )
+        except openai_sdk.APIError as e:
+            raise UpstreamError(
+                f"OpenAI streaming error: {e}",
+                detail={"provider": "openai", "error": str(e)},
+            )
+        except Exception as e:
+            raise UpstreamError(
+                f"Unexpected error opening OpenAI stream: {e}",
+                detail={"provider": "openai"},
+            )
+
+        prompt_tokens: int | None = None
+        completion_tokens: int | None = None
+
+        try:
+            for chunk in stream:
+                # Usage-only chunks have no choices; treat them as the
+                # signal that token counts are available.
+                if getattr(chunk, "usage", None):
+                    prompt_tokens = getattr(chunk.usage, "prompt_tokens", None)
+                    completion_tokens = getattr(chunk.usage, "completion_tokens", None)
+
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                token_text = getattr(delta, "content", None)
+                if token_text:
+                    yield StreamEvent(type="token", text=token_text)
+        except Exception as e:
+            # Mid-stream failure: surface to the caller, the orchestrator
+            # decides whether to persist a partial trace.
+            raise UpstreamError(
+                f"OpenAI stream interrupted: {e}",
+                detail={"provider": "openai", "error": str(e)},
+            )
+
+        latency_ms = int((time.time() - start_time) * 1000)
+        logger.debug(
+            f"OpenAI stream finished: {latency_ms}ms, "
+            f"tokens: {prompt_tokens} prompt + {completion_tokens} completion"
+        )
+
+        yield StreamEvent(
+            type="done",
+            text="",
+            latency_ms=latency_ms,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            model_provider="openai",
+            model_name=model,
+        )
