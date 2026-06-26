@@ -1265,7 +1265,7 @@ class AIService:
         if ctx.get("current_step"):
             project_lines.append(f"- Paso actual: {ctx['current_step']}")
         if ctx.get("role"):
-            project_lines.append(f"- Rol del usuario: {ctx['role']}")
+            inst_lines.append(f"- Rol del usuario: {ctx['role']}")
 
         if ctx.get("phase_status"):
             project_lines.append(f"- Estado de la fase: {ctx['phase_status']}")
@@ -1420,8 +1420,8 @@ class AIService:
 
         # ── Assemble final output ──
 
-        # Active-project path
-        if project_lines:
+        # Active-project path: only when a project name is present
+        if name and project_lines:
             project_section = (
                 "\n\n═══ CONTEXTO DEL PROYECTO ═══\n"
                 + authority_note
@@ -1430,7 +1430,7 @@ class AIService:
             )
             return field_block + project_section
 
-        # Dashboard path
+        # Dashboard path: institution-level stats (no active project selected)
         if inst_state_section or user_projects_section or inst_lines:
             inst_header = (
                 ("\n\n═══ CONTEXTO INSTITUCIONAL ═══\n" + authority_note + "\n".join(inst_lines))
