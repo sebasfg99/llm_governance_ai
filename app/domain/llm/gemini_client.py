@@ -1,24 +1,8 @@
-# ============================================================
-# app/domain/llm/gemini_client.py — Google Gemini client
-#
-# WHY THIS FILE EXISTS:
-# Mirror of openai_client.py for the Gemini provider.
-# Same interface — the router calls generate() on either client
-# without knowing which one it's talking to.
-#
-# GEMINI SDK NOTES:
-# Google's SDK uses genai.GenerativeModel to create model instances
-# and .generate_content() to call them. The interface is slightly
-# different from OpenAI's but we normalize it here.
-#
-# TODO: Add streaming support
-# TODO: Add safety settings configuration (Gemini has built-in filters)
-# ============================================================
-
 import time
 from typing import Iterator
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -29,36 +13,28 @@ logger = get_logger(__name__)
 
 
 class GeminiClient:
-    """
-    Wrapper around the Google Gemini Generative AI API.
-
-    Provides the same generate() interface as OpenAIClient
-    so the LLM router can call either client interchangeably.
-
-    Usage:
-        client = GeminiClient()
-        text = client.generate(
-            prompt="You are a helpful assistant.\n\nUser: What is RAG?",
-            model="gemini-1.5-flash",
-        )
-    """
-
     def __init__(self) -> None:
-        """
-        Configure the Gemini SDK with the API key from settings.
-
-        Unlike OpenAI, the Gemini SDK uses a module-level configure()
-        call rather than a client object. The model is instantiated
-        per-call in generate().
-        """
         if not settings.gemini_api_key:
-            raise RuntimeError(
-                "GEMINI_API_KEY is not set. Add it to your .env file."
-            )
+            raise RuntimeError("GEMINI_API_KEY is not set. Add it to your .env file.")
+        self._client = genai.Client(api_key=settings.gemini_api_key)
+        logger.debug("Gemini client configured (google-genai SDK)")
 
-        # Configure the SDK globally — this stores the API key for all subsequent calls
-        genai.configure(api_key=settings.gemini_api_key)
-        logger.debug("Gemini client configured")
+    def _generation_config(self, temperature: float, max_tokens: int) -> types.GenerateContentConfig:
+        return types.GenerateContentConfig(
+            temperature=temperature,
+            max_output_tokens=max_tokens,
+        )
+
+    def _handle_error(self, e: Exception, streaming: bool = False) -> None:
+        error_str = str(e).lower()
+        if "api key" in error_str or "authentication" in error_str or "401" in error_str:
+            raise UpstreamError("Gemini authentication failed. Check your GEMINI_API_KEY.",
+                                detail={"provider": "gemini", "error": str(e)})
+        elif "quota" in error_str or "rate" in error_str or "429" in error_str:
+            raise UpstreamError("Gemini rate limit or quota exceeded.",
+                                detail={"provider": "gemini", "error": str(e)})
+        label = "streaming error" if streaming else "API error"
+        raise UpstreamError(f"Gemini {label}: {e}", detail={"provider": "gemini", "error": str(e)})
 
     def generate(
         self,
@@ -67,106 +43,40 @@ class GeminiClient:
         temperature: float = 0.2,
         max_tokens: int = 2048,
     ) -> tuple[str, int, int | None, int | None]:
-        """
-        Generate a text response using the Gemini API.
-
-        Args:
-            prompt:      The fully assembled prompt.
-            model:       The Gemini model to use. Defaults to settings.llm_default_model.
-            temperature: Sampling temperature (0.0 = deterministic).
-            max_tokens:  Max output tokens.
-
-        Returns:
-            Tuple of (response_text, latency_ms, prompt_tokens, completion_tokens).
-            Note: Gemini may not always return token counts.
-
-        Raises:
-            UpstreamError: If the Gemini API call fails.
-        """
         model = model or settings.llm_default_model
-
         logger.debug(f"Calling Gemini model={model}, temperature={temperature}")
-
-        # Record start time for latency measurement
         start_time = time.time()
 
         try:
-            # Instantiate the Gemini model
-            # GenerativeModel is stateless — safe to create per-call
-            gemini_model = genai.GenerativeModel(
-                model_name=model,
-                # GenerationConfig controls sampling behavior
-                generation_config=genai.GenerationConfig(
-                    temperature=temperature,
-                    max_output_tokens=max_tokens,
-                ),
+            response = self._client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=self._generation_config(temperature, max_tokens),
             )
-
-            # Call the model with our assembled prompt
-            # generate_content() is the synchronous API (async: generate_content_async)
-            response = gemini_model.generate_content(prompt)
-
         except Exception as e:
-            # Gemini SDK raises generic exceptions — inspect the message
-            error_str = str(e).lower()
-            if "api key" in error_str or "authentication" in error_str:
-                raise UpstreamError(
-                    "Gemini authentication failed. Check your GEMINI_API_KEY.",
-                    detail={"provider": "gemini", "error": str(e)},
-                )
-            elif "quota" in error_str or "rate" in error_str:
-                raise UpstreamError(
-                    "Gemini rate limit or quota exceeded.",
-                    detail={"provider": "gemini", "error": str(e)},
-                )
-            else:
-                raise UpstreamError(
-                    f"Gemini API error: {e}",
-                    detail={"provider": "gemini", "error": str(e)},
-                )
+            self._handle_error(e)
 
-        # Calculate latency
         latency_ms = int((time.time() - start_time) * 1000)
-
-        # Extract response text
-        # Gemini returns response.text as a convenience property
-        response_text = response.text if hasattr(response, "text") else ""
+        response_text = response.text or ""
 
         if not response_text:
-            # Check for safety filter blocks
-            if hasattr(response, "candidates") and response.candidates:
-                finish_reason = response.candidates[0].finish_reason
-                raise UpstreamError(
-                    f"Gemini returned empty response. Finish reason: {finish_reason}",
-                    detail={"provider": "gemini", "finish_reason": str(finish_reason)},
-                )
+            finish = None
+            if response.candidates:
+                finish = response.candidates[0].finish_reason
             raise UpstreamError(
-                "Gemini returned an empty response with no explanation.",
-                detail={"provider": "gemini"},
+                f"Gemini returned empty response. Finish reason: {finish}",
+                detail={"provider": "gemini", "finish_reason": str(finish)},
             )
 
-        # Token counts (may not always be present in Gemini responses)
         prompt_tokens = None
         completion_tokens = None
-        if hasattr(response, "usage_metadata") and response.usage_metadata:
-            prompt_tokens = getattr(response.usage_metadata, "prompt_token_count", None)
-            completion_tokens = getattr(response.usage_metadata, "candidates_token_count", None)
+        if response.usage_metadata:
+            prompt_tokens = response.usage_metadata.prompt_token_count
+            completion_tokens = response.usage_metadata.candidates_token_count
 
-        logger.debug(
-            f"Gemini response received: {len(response_text)} chars, {latency_ms}ms"
-        )
-
+        logger.debug(f"Gemini response: {len(response_text)} chars, {latency_ms}ms")
         return response_text, latency_ms, prompt_tokens, completion_tokens
 
-    # ----------------------------------------------------------
-    # Streaming variant
-    #
-    # Gemini supports streaming through generate_content(stream=True).
-    # The returned iterator yields chunks where chunk.text is the
-    # incremental delta. usage_metadata may appear on the final
-    # chunk; we also try to read it from the iterator's
-    # response.resolve() handle when available.
-    # ----------------------------------------------------------
     def stream_generate(
         self,
         prompt: str,
@@ -175,70 +85,37 @@ class GeminiClient:
         max_tokens: int = 2048,
     ) -> Iterator[StreamEvent]:
         model = model or settings.llm_default_model
-
         logger.debug(f"Streaming Gemini model={model}, temperature={temperature}")
         start_time = time.time()
 
         try:
-            gemini_model = genai.GenerativeModel(
-                model_name=model,
-                generation_config=genai.GenerationConfig(
-                    temperature=temperature,
-                    max_output_tokens=max_tokens,
-                ),
+            stream = self._client.models.generate_content_stream(
+                model=model,
+                contents=prompt,
+                config=self._generation_config(temperature, max_tokens),
             )
-            stream = gemini_model.generate_content(prompt, stream=True)
         except Exception as e:
-            error_str = str(e).lower()
-            if "api key" in error_str or "authentication" in error_str:
-                raise UpstreamError(
-                    "Gemini authentication failed. Check your GEMINI_API_KEY.",
-                    detail={"provider": "gemini", "error": str(e)},
-                )
-            elif "quota" in error_str or "rate" in error_str:
-                raise UpstreamError(
-                    "Gemini rate limit or quota exceeded.",
-                    detail={"provider": "gemini", "error": str(e)},
-                )
-            raise UpstreamError(
-                f"Gemini streaming error: {e}",
-                detail={"provider": "gemini", "error": str(e)},
-            )
+            self._handle_error(e, streaming=True)
 
         last_chunk = None
         try:
             for chunk in stream:
                 last_chunk = chunk
-                # Gemini's chunk.text raises if the chunk has no text part
-                # (e.g. safety-filtered fragments). Guard with try/except
-                # so a single empty chunk doesn't kill the stream.
-                try:
-                    delta = chunk.text or ""
-                except Exception:
-                    delta = ""
+                delta = chunk.text or ""
                 if delta:
                     yield StreamEvent(type="token", text=delta)
         except Exception as e:
-            raise UpstreamError(
-                f"Gemini stream interrupted: {e}",
-                detail={"provider": "gemini", "error": str(e)},
-            )
+            raise UpstreamError(f"Gemini stream interrupted: {e}",
+                                detail={"provider": "gemini", "error": str(e)})
 
         latency_ms = int((time.time() - start_time) * 1000)
+        prompt_tokens = None
+        completion_tokens = None
+        if last_chunk is not None and last_chunk.usage_metadata:
+            prompt_tokens = last_chunk.usage_metadata.prompt_token_count
+            completion_tokens = last_chunk.usage_metadata.candidates_token_count
 
-        prompt_tokens: int | None = None
-        completion_tokens: int | None = None
-        if last_chunk is not None and hasattr(last_chunk, "usage_metadata"):
-            usage = last_chunk.usage_metadata
-            if usage:
-                prompt_tokens = getattr(usage, "prompt_token_count", None)
-                completion_tokens = getattr(usage, "candidates_token_count", None)
-
-        logger.debug(
-            f"Gemini stream finished: {latency_ms}ms, "
-            f"tokens: {prompt_tokens} prompt + {completion_tokens} completion"
-        )
-
+        logger.debug(f"Gemini stream done: {latency_ms}ms, {prompt_tokens}+{completion_tokens} tokens")
         yield StreamEvent(
             type="done",
             text="",
