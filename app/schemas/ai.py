@@ -39,6 +39,8 @@ UseCaseLiteral = Literal[
     "risk_intake",
     "risk_analysis",
     "controls_generation",
+    "control_ranking",
+    "iso_checklist",
 ]
 
 
@@ -68,9 +70,9 @@ class AIQueryRequest(BaseModel):
 
     top_k: int = Field(
         default=5,
-        ge=1,
+        ge=0,
         le=20,
-        description="Number of document chunks to retrieve",
+        description="Number of document chunks to retrieve. 0 is valid for structured use cases (control_ranking, iso_checklist) that bypass RAG.",
     )
 
     include_global: bool = Field(
@@ -117,6 +119,62 @@ class AIQueryRequest(BaseModel):
         default=None,
         description="Optional list of framework slugs to scope RAG retrieval to.",
         example=["iso_42001", "nist_airmf"],
+    )
+
+    # Caller-supplied system prompt that supersedes the use_case's default.
+    # Source: GovAI prompt_registry table. When set, the use_case prompt
+    # lookup is skipped but the use_case value is still recorded in traces
+    # for observability. Empty string is treated as None.
+    system_prompt_override: str | None = Field(
+        default=None,
+        description=(
+            "If provided, overrides the use_case's default system prompt. "
+            "Source: GovAI prompt_registry table. The use_case is still "
+            "honored for trace bookkeeping."
+        ),
+    )
+
+    # Inline L2 expediente snapshot used when project_id is null (sandbox
+    # Phase 2 strategy where ai_projects rows are not yet mirrored into the
+    # Python projects table). AIService injects a compact summary into the
+    # prompt. Ignored when project_id is set — the DB-loaded expediente
+    # wins so the persisted project state stays authoritative.
+    project_context: dict | None = Field(
+        default=None,
+        description=(
+            "Inline L2 expediente snapshot. Used when project_id is null "
+            "to pass project name, risk level, current phase, institution, "
+            "risks and user role without requiring DB persistence."
+        ),
+    )
+
+    # Inline conversation history from the frontend session.
+    # Used when no thread_id is provided so the sidecar can maintain
+    # conversational context without requiring DB-persisted threads.
+    # Each entry is {"role": "user"|"assistant", "content": "..."}.
+    # Capped at 20 messages by the Edge Function caller.
+    chat_history: list[dict] | None = Field(
+        default=None,
+        description=(
+            "Inline conversation history when no thread_id is provided. "
+            "List of {role, content} dicts, oldest first."
+        ),
+    )
+
+    # Structured context for control_ranking use_case.
+    # Contains: threat (dict with source_code, threat_name, etc.),
+    # controls (list of dicts with control_code, title_es, description_es),
+    # and project (dict with project attributes for relevance scoring).
+    control_ranking_context: dict | None = Field(
+        default=None,
+        description="Threat + controls + project data for control_ranking use_case.",
+    )
+
+    # Structured context for iso_checklist use_case.
+    # Contains: project (dict), phases (list), gates (list).
+    iso_checklist_context: dict | None = Field(
+        default=None,
+        description="Project + phases + gates data for iso_checklist use_case.",
     )
 
     # When True the response is delivered as Server-Sent Events
@@ -188,6 +246,32 @@ class StructuredAnswer(BaseModel):
     suggested_followups: list[str] = []
 
 
+class ControlRankingItem(BaseModel):
+    control_code: str
+    rank: int
+    justification: str
+
+
+class ControlRankingResponse(BaseModel):
+    rankings: list[ControlRankingItem]
+
+
+class IsoClause(BaseModel):
+    clause: str
+    title: str
+    status: Literal["compliant", "partial", "gap", "not_applicable"]
+    evidence: str | None = None
+    gap: str | None = None
+
+
+class IsoChecklistResponse(BaseModel):
+    overall_score: int
+    ready_for_go_live: bool
+    clauses: list[IsoClause]
+    critical_gaps: list[str]
+    recommendations: list[str]
+
+
 class AIQueryResponse(BaseModel):
     """
     Response from POST /ai/query.
@@ -236,3 +320,20 @@ class AIQueryResponse(BaseModel):
     # query and hydrated the prompt with past traces from the project.
     # Useful for the UI to render a "Based on 3 past analyses" badge.
     used_reasoning_memory: bool = False
+
+    # ----------------------------------------------------------
+    # Token + cost telemetry
+    #
+    # Forwarded into agent_interactions by Edge Function callers so
+    # GovAI quota tracking (monthly_token_limit) remains accurate
+    # when LLM calls bypass Lovable AI Gateway and hit OpenAI direct
+    # via this sidecar. Nullable because non-LLM error paths still
+    # return a response shape.
+    # ----------------------------------------------------------
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+
+    # Cost estimate in USD computed from provider rate cards. Used
+    # for billing parity + cost alerting; reported in traces too.
+    cost_estimate_usd: float | None = None

@@ -20,10 +20,6 @@
 # active version.
 # ============================================================
 
-import json
-import time
-from urllib.parse import urlparse
-
 from supabase import Client
 
 from app.core.logging import get_logger
@@ -39,15 +35,91 @@ logger = get_logger(__name__)
 # This prevents the system from failing on a missing prompt
 # during development or first setup.
 # ============================================================
-DEFAULT_SYSTEM_PROMPT = """Eres un asistente experto en gobernanza de IA, regulación y cumplimiento normativo. \
-Respondes en español usando el contenido del CONTEXTO proporcionado como base principal.
+_CHATBOT_PROMPT = """\
+Eres el Agente GovAI — copiloto de gobernanza de IA integrado en la plataforma.
 
-REGLAS DE RESPUESTA:
-- Usa el contexto como fuente principal. Puedes hacer inferencias lógicas y conectar ideas del texto.
-- Si el contexto cubre el tema parcialmente, responde con lo que tienes e indica qué aspectos no están cubiertos.
-- Solo rechaza responder si el contexto es completamente irrelevante al tema preguntado.
-- Cuando cites información específica del contexto, usa: [Fuente: <fragmento del documento>]
-- Responde de forma clara, estructurada y útil para el usuario."""
+━━━ ROL ━━━
+Eres simultáneamente:
+• Un asistente de datos: respondés preguntas sobre el estado real de la institución y sus proyectos.
+• Un guía de procesos: acompañás al usuario en cada paso del ciclo de gobernanza.
+• Un experto normativo: explicás ISO 42001, NIST AI RMF, EU AI Act, SUGEF, CONASSIF y la normativa aplicable.
+
+━━━ FUENTES DE INFORMACIÓN (en orden de prioridad) ━━━
+
+1. BLOQUES DE CONTEXTO (═══): Datos reales y autoritativos de la base de datos.
+   Los bloques marcados con ═══ contienen información exacta y actualizada.
+   Para preguntas sobre proyectos, riesgos, fases, pasos, aprobaciones, condiciones,
+   proyectos gobernados o cualquier estado de la plataforma: usá EXCLUSIVAMENTE estos bloques.
+   NUNCA digas "no tengo acceso a esa información" si el dato aparece en un bloque ═══.
+   Respondé con los números y estados exactos del contexto, no con aproximaciones.
+
+2. DOCUMENTOS RECUPERADOS: Para preguntas normativas y regulatorias.
+   Citá la fuente cuando usés un documento: [Fuente: nombre_documento]
+   Si el documento no cubre la pregunta completamente, indicalo y usá tu conocimiento
+   de entrenamiento como complemento, distinguiendo claramente entre ambas fuentes.
+
+3. CONOCIMIENTO DE ENTRENAMIENTO: Solo como último recurso para preguntas normativas generales.
+   Cuando lo usés, aclaralo explícitamente: "Según mi conocimiento general..."
+
+━━━ COMPORTAMIENTO DE COPILOTO ━━━
+
+PROACTIVO: Cuando respondés sobre el estado actual, siempre añadí el próximo paso más urgente.
+CONCISO: Máximo 3-4 párrafos o una lista de 6 ítems. Sin introducciones largas ni repetir la pregunta.
+ACCIONABLE: Terminá con una acción concreta que el usuario puede hacer ahora mismo.
+ROL-CONSCIENTE: Adaptá el enfoque según el rol indicado en el bloque de contexto:
+  • compliance_officer → visión ejecutiva, aprobaciones pendientes, condiciones por vencer, estado de cumplimiento.
+  • project_leader → pasos pendientes del proyecto, deliverables incompletos, evidencias faltantes.
+  • technical_leader → aspectos técnicos, controles ISO 42001, mitigación de riesgos.
+  • executive → métricas de alto nivel, proyectos en riesgo, estado global de la institución.
+
+Respondé siempre en español, a menos que el usuario escriba en otro idioma.\
+"""
+
+_EXECUTIVE_SUMMARY_PROMPT = """\
+Eres el Agente GovAI especializado en Gate Reviews y resúmenes ejecutivos de gobernanza.
+
+Usá el bloque ═══ CONTEXTO DEL PROYECTO ═══ para preparar al usuario para el Gate Review:
+• Estado de la fase actual: pasos completados vs. pendientes (con nombres específicos).
+• Condiciones del gate anterior sin resolver.
+• Top 3 riesgos más críticos y si tienen plan de mitigación definido.
+• Evidencias: qué pasos tienen evidencias faltantes.
+• Diagnóstico final: ¿está el proyecto listo para el Gate Review?
+
+Formato de respuesta OBLIGATORIO:
+✅ Completado: [lista específica]
+⏳ Pendiente: [lista específica con paso número y nombre]
+⚠️ Alertas: [condiciones abiertas, riesgos críticos, evidencias faltantes]
+📋 Diagnóstico: listo para gate / necesita [X] antes del gate
+
+Sé directo. Máximo 6 ítems por sección. Respondé en español.\
+"""
+
+_RISK_ANALYSIS_PROMPT = """\
+Eres el Agente GovAI especializado en análisis de riesgos de IA bajo MITRE ATLAS, OWASP LLM Top 10 e ISO 42001.
+
+Cuando el usuario pregunta sobre riesgos:
+1. Usá el bloque ═══ CONTEXTO DEL PROYECTO ═══ para mostrar el registro real de riesgos.
+   Los campos "Registro de riesgos" contienen los datos exactos — nunca inventes riesgos no listados.
+2. Para cada riesgo sin mitigar: proponé una estrategia concreta y el control ISO 42001 más relevante.
+3. Usá los "Documentos recuperados" para fundamentar las recomendaciones normativas.
+
+Presentá la información así (ordenado por severidad descendente):
+• [Amenaza] — Severidad: X | Control ISO: Y | Estado: mitigado/pendiente
+• Recomendación de siguiente paso para los 3 riesgos más críticos
+
+Sé preciso y accionable. Respondé en español.\
+"""
+
+# Generic fallback — used for use_cases without a specific prompt
+# and when the DB has no active prompt for that use_case.
+DEFAULT_SYSTEM_PROMPT = _CHATBOT_PROMPT
+
+# Per-use-case defaults (checked before the generic fallback)
+_USE_CASE_PROMPTS: dict[str, str] = {
+    "chatbot": _CHATBOT_PROMPT,
+    "executive_summary": _EXECUTIVE_SUMMARY_PROMPT,
+    "risk_analysis": _RISK_ANALYSIS_PROMPT,
+}
 
 
 class PromptService:
@@ -83,34 +155,6 @@ class PromptService:
         """
         logger.debug(f"Fetching active prompt for use_case='{use_case}'")
 
-        # #region agent log
-        try:
-            _pu = str(self.db.postgrest.session.base_url)
-            with open(
-                "/Users/sebas/Documents/projects/llm_ai_governance_project/.cursor/debug-e21e89.log",
-                "a",
-                encoding="utf-8",
-            ) as _df:
-                _df.write(
-                    json.dumps(
-                        {
-                            "sessionId": "e21e89",
-                            "hypothesisId": "H3",
-                            "location": "prompts/service.py:get_active_prompt",
-                            "message": "pre_execute_httpx_base_url",
-                            "data": {
-                                "httpx_base_url": _pu,
-                                "httpx_host": urlparse(_pu).hostname,
-                            },
-                            "timestamp": int(time.time() * 1000),
-                        }
-                    )
-                    + "\n"
-                )
-        except OSError:
-            pass
-        # #endregion
-
         result = (
             self.db.table("prompts")
             .select("*")
@@ -122,20 +166,20 @@ class PromptService:
         )
 
         if not result.data:
+            # Use a per-use-case copilot prompt if available, otherwise the generic default.
+            fallback_content = _USE_CASE_PROMPTS.get(use_case, DEFAULT_SYSTEM_PROMPT)
             logger.warning(
                 f"No active prompt found for use_case='{use_case}'. "
-                "Using built-in default prompt."
+                f"Using built-in {'use-case-specific' if use_case in _USE_CASE_PROMPTS else 'generic'} fallback."
             )
-            # Return a synthetic Prompt using the hardcoded default
-            # This prevents the system from failing when the DB is empty
             from uuid import uuid4
             from datetime import datetime, timezone
             return Prompt(
                 id=uuid4(),
-                name="Default (built-in fallback)",
+                name=f"Built-in copilot ({use_case})",
                 version=0,
                 use_case=use_case,
-                content=DEFAULT_SYSTEM_PROMPT,
+                content=fallback_content,
                 is_active=True,
                 created_at=datetime.now(timezone.utc),
             )
