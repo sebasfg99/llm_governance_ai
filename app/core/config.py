@@ -87,10 +87,47 @@ class Settings(BaseSettings):
     # File storage
     # ----------------------------------------------------------
 
-    # Local directory where uploaded documents are saved.
-    # Files are organized as: {upload_dir}/{tenant_id}/{filename}
-    # TODO: Replace with an S3 bucket path in production
+    # Name of the Supabase Storage bucket where document originals
+    # are stored. Created by migration `_ai_core_schema.sql`.
+    # Object path scheme: {tenant_id}/{document_id}/{filename}
+    storage_bucket: str = "rag-documents"
+
+    # Legacy fallback for local development without Supabase Storage.
+    # Only consulted when the storage client raises and the env var
+    # AI_CORE_ALLOW_LOCAL_FALLBACK=true. Not used in production paths.
     upload_dir: str = "./uploads"
+
+    # ----------------------------------------------------------
+    # Authentication
+    #
+    # The sidecar accepts two auth modes side-by-side:
+    #
+    #   Path A — Service key + trusted headers
+    #     Used by the Supabase Edge Function proxy. The Edge Function
+    #     validates the end-user's Supabase JWT, then forwards the
+    #     request with `Authorization: Bearer <AI_CORE_SERVICE_KEY>`
+    #     and `X-Tenant-Id` / `X-User-Id` headers. Lets us keep the
+    #     end-user trust boundary in Supabase while the sidecar treats
+    #     the Edge Function as a privileged caller.
+    #
+    #   Path B — Supabase JWT
+    #     Used by direct clients (future external integrations, ops
+    #     scripts) that already hold a Supabase auth JWT. The sidecar
+    #     decodes the JWT using SUPABASE_JWT_SECRET and extracts
+    #     tenant_id from app_metadata.
+    # ----------------------------------------------------------
+
+    # Shared secret between the Supabase Edge Function and this
+    # sidecar for Path A. Must be a high-entropy random string
+    # (32+ chars). Set the same value in Supabase Edge Function
+    # secrets via `supabase secrets set AI_CORE_SERVICE_KEY=...`.
+    ai_core_service_key: str = ""
+
+    # JWT signing secret for Path B. Obtained from
+    # Supabase → Project Settings → API → JWT Secret. Required
+    # only if Path B is exercised (Edge Function proxy callers
+    # use Path A and never need this set).
+    supabase_jwt_secret: str = ""
 
     # ----------------------------------------------------------
     # Chunking settings for RAG document processing

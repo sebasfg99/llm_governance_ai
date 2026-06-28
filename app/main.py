@@ -25,7 +25,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 # Import core error registration
+from app.core.config import settings
 from app.core.errors import register_error_handlers
+from app.core.logging import get_logger
+from app.db.supabase import get_supabase_client
+
+_logger = get_logger(__name__)
 
 # Import all API route modules
 from app.api.routes import (
@@ -92,6 +97,54 @@ register_error_handlers(app)
 
 # --- Health check: GET /health ---
 app.include_router(health.router, prefix="/health", tags=["Health"])
+
+
+# --- Readiness probe: GET /ready ---
+#
+# Cloud Run / Railway distinguish between two probe semantics:
+#   - liveness  (/health): "the process is up; do not restart me"
+#   - readiness (/ready):  "I can serve traffic now; route requests to me"
+#
+# Readiness must verify the dependencies the sidecar actually needs to
+# answer a request — the Supabase client and the configured OpenAI key.
+# We keep the check fast (< 100ms) so Cloud Run's default 1s probe
+# interval never blocks request routing. Failures return 503 so the
+# load balancer drains traffic until the dependency recovers.
+@app.get("/ready", tags=["Health"], summary="Readiness probe")
+def readiness_probe() -> JSONResponse:
+    """
+    Return 200 only when the sidecar can actually serve queries:
+      - Supabase client initialised
+      - OpenAI key configured (the primary LLM provider)
+      - Auth env vars present (either service-key or JWT secret)
+    Any failure returns 503 with the offending dependency.
+    """
+    problems: list[str] = []
+
+    try:
+        client = get_supabase_client()
+        if client is None:
+            problems.append("supabase_client_not_initialized")
+    except Exception as exc:  # noqa: BLE001 — probe must never crash
+        problems.append(f"supabase_init_failed:{type(exc).__name__}")
+
+    if not settings.openai_api_key:
+        problems.append("openai_api_key_missing")
+
+    if not settings.ai_core_service_key and not settings.supabase_jwt_secret:
+        # At least one auth path must be configured.
+        problems.append("auth_not_configured")
+
+    if problems:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "problems": problems},
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content={"status": "ready", "service": "ai-core"},
+    )
 
 # --- Documents: upload, process, list, get ---
 # POST /documents/upload

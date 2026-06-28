@@ -5,7 +5,7 @@
 # The DocumentService is the "brain" of the document domain.
 # It orchestrates the entire ingestion pipeline:
 #
-#   Upload file → Save to disk → Create DB record
+#   Upload file → Save to Supabase Storage → Create DB record
 #   → Parse text (PDF/DOCX) → Split into chunks
 #   → Generate embeddings → Save chunks to DB
 #   → Mark document as "ready"
@@ -13,15 +13,17 @@
 # All parsing, chunking, and embedding logic lives in separate
 # modules. This service just coordinates them in the right order.
 #
-# DESIGN PRINCIPLE:
-# The service never knows how PDF parsing works internally.
-# It calls parse_pdf() and gets back text. This means we can
-# swap out the parser later (e.g., add OCR) without changing
-# the service at all.
+# WHY SUPABASE STORAGE (not local disk):
+# Sandbox runs on Railway with ephemeral disks — a container
+# restart erases local files. Production target (Cloud Run) has
+# the same constraint. Storing originals in the Supabase bucket
+# `rag-documents` means uploads survive restarts, the re-ingest
+# script can pull objects directly, and the sidecar stays
+# horizontally scalable.
 # ============================================================
 
 import os
-import uuid
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -38,8 +40,17 @@ from app.domain.documents.parser_txt import parse_txt
 from app.domain.documents.chunking import chunk_text_with_sections
 from app.domain.documents.embeddings import embed_texts
 
-# Logger for this module
 logger = get_logger(__name__)
+
+
+# MIME types used when uploading to Storage. Required by the
+# Supabase storage API for correct content negotiation when files
+# are downloaded later (signed URLs, browser preview, etc.).
+_MIME_BY_EXTENSION = {
+    "pdf": "application/pdf",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "txt": "text/plain; charset=utf-8",
+}
 
 
 class DocumentService:
@@ -48,11 +59,13 @@ class DocumentService:
 
     This service manages the full document ingestion pipeline:
     from raw file bytes to searchable embedded chunks in the DB.
+    Originals are stored in Supabase Storage so the sidecar
+    remains stateless and horizontally scalable.
 
     Usage:
         db = get_supabase_client()
         service = DocumentService(db)
-        doc = await service.upload_document(
+        doc = service.upload_document(
             tenant_id="acme",
             filename="contract.pdf",
             file_bytes=b"...",
@@ -61,20 +74,11 @@ class DocumentService:
     """
 
     def __init__(self, db: Client) -> None:
-        """
-        Initialize the service with a Supabase client.
-
-        Args:
-            db: An initialized Supabase Client from app.db.supabase
-        """
         self.db = db
-        # Ensure the uploads directory exists at startup
-        os.makedirs(settings.upload_dir, exist_ok=True)
+        self._bucket = settings.storage_bucket
 
     # ----------------------------------------------------------
     # upload_document
-    # Saves the file to disk and creates a DB record.
-    # Does NOT start processing — call process_document() separately.
     # ----------------------------------------------------------
     def upload_document(
         self,
@@ -85,35 +89,32 @@ class DocumentService:
         framework: str | None = None,
     ) -> Document:
         """
-        Save an uploaded file to disk and create its database record.
-
-        This method only handles storage — it does NOT parse or embed.
-        Call process_document() after this to run the full pipeline.
+        Save an uploaded file to Supabase Storage and create its
+        database record. Does NOT parse or embed — call
+        process_document() after this.
 
         Args:
-            tenant_id: The tenant that owns this document.
-            filename:  The original filename (e.g., "contract.pdf").
+            tenant_id:  The tenant that owns this document.
+            filename:   The original filename (e.g., "contract.pdf").
             file_bytes: The raw file content as bytes.
-            country:   Normalized country slug this document applies to
-                       (e.g. "costa-rica"). None means global (all countries).
-            framework: Normative framework slug (e.g. "iso_42001", "nist_airmf").
-                       None means the document is framework-agnostic and is
-                       always eligible for retrieval regardless of any
-                       framework_filter the caller passes.
+            country:    Normalized country slug this document applies
+                        to (e.g. "costa-rica"). None = global.
+            framework:  Normative framework slug (e.g. "iso_42001").
+                        None = framework-agnostic.
 
         Returns:
             The newly created Document record with status="pending".
 
         Raises:
-            DocumentProcessingError: If the file type is not supported.
+            DocumentProcessingError: If the file type is not supported
+                or the Storage upload fails.
         """
         logger.info(
             f"Uploading document: {filename} for tenant: {tenant_id}, "
-            f"country: {country}, framework: {framework}"
+            f"country: {country}, framework: {framework}, "
+            f"size: {len(file_bytes)} bytes"
         )
 
-        # --- Determine file type from extension ---
-        # We only support PDF and DOCX in the MVP
         extension = Path(filename).suffix.lower().lstrip(".")
         if extension == "pdf":
             file_type = FileType.PDF
@@ -127,53 +128,72 @@ class DocumentService:
                 "Only PDF, DOCX, and TXT files are supported."
             )
 
-        # --- Create tenant-scoped directory ---
-        # Structure: ./uploads/{tenant_id}/
-        # This keeps each tenant's files physically separate on disk
-        tenant_upload_dir = Path(settings.upload_dir) / tenant_id
-        tenant_upload_dir.mkdir(parents=True, exist_ok=True)
-
-        # --- Generate a unique filename to avoid collisions ---
-        # Prefix the original filename with a UUID to handle duplicate uploads
-        unique_filename = f"{uuid.uuid4().hex}_{filename}"
-        file_path = str(tenant_upload_dir / unique_filename)
-
-        # --- Save file to disk ---
-        with open(file_path, "wb") as f:
-            f.write(file_bytes)
-
-        logger.debug(f"File saved to: {file_path}")
-
-        # --- Create the document record in the database ---
-        # Status starts as "pending" — process_document() will update it
+        # Insert the document row first so we have a stable UUID to
+        # use in the Storage object path. The status stays "pending"
+        # until the bytes are confirmed in Storage.
         now = datetime.now(timezone.utc).isoformat()
         doc_data = {
             "tenant_id": tenant_id,
-            "filename": filename,           # Store original filename for display
-            "file_type": file_type.value,   # "pdf" or "docx"
-            "file_path": file_path,         # Full path on disk
+            "filename": filename,
+            "file_type": file_type.value,
+            "file_path": "",  # Filled in after we know the document UUID
             "status": DocumentStatus.PENDING.value,
-            "country": country,             # None = global, slug = country-specific
-            "framework": framework,         # None = framework-agnostic
+            "country": country,
+            "framework": framework,
             "created_at": now,
         }
-
         result = self.db.table("documents").insert(doc_data).execute()
-
         if not result.data:
             raise DocumentProcessingError(
                 "Failed to create document record in database"
             )
+        doc_row = result.data[0]
+        document_id = doc_row["id"]
 
-        # Convert the DB row dict into our Document model
-        doc = Document(**result.data[0])
+        # Storage path scheme: {tenant_id}/{document_id}/{filename}
+        # Using the document UUID as a directory means we never
+        # collide even when two documents share a filename, and we
+        # can delete a document's storage tree by prefix.
+        storage_path = f"{tenant_id}/{document_id}/{filename}"
 
-        logger.info(f"Document uploaded successfully: id={doc.id}, status=pending")
+        try:
+            self._storage_upload(
+                storage_path=storage_path,
+                file_bytes=file_bytes,
+                content_type=_MIME_BY_EXTENSION.get(extension, "application/octet-stream"),
+            )
+        except Exception as exc:
+            # Roll back the DB row so a failed upload doesn't leave
+            # an orphan "pending" document the user can't recover.
+            logger.error(
+                f"Storage upload failed for document {document_id}: {exc}",
+                exc_info=True,
+            )
+            try:
+                self.db.table("documents").delete().eq("id", document_id).execute()
+            except Exception as cleanup_exc:
+                logger.warning(
+                    f"Failed to clean up DB row after upload error: {cleanup_exc}"
+                )
+            raise DocumentProcessingError(
+                f"Failed to upload file to Storage: {exc}"
+            ) from exc
+
+        # Persist the storage path now that the upload succeeded.
+        self.db.table("documents").update({"file_path": storage_path}).eq(
+            "id", document_id
+        ).execute()
+        doc_row["file_path"] = storage_path
+
+        doc = Document(**doc_row)
+        logger.info(
+            f"Document uploaded successfully: id={doc.id}, "
+            f"storage_path={storage_path}, status=pending"
+        )
         return doc
 
     # ----------------------------------------------------------
     # process_document
-    # Runs the full ingestion pipeline for an uploaded document.
     # ----------------------------------------------------------
     def process_document(self, document_id: str) -> Document:
         """
@@ -182,82 +202,76 @@ class DocumentService:
         Pipeline:
           1. Fetch document record from DB
           2. Set status to "processing"
-          3. Parse text from file (PDF or DOCX)
-          4. Split text into chunks
-          5. Generate embeddings for all chunks
-          6. Save all chunks to document_chunks table
-          7. Set status to "ready"
+          3. Download bytes from Supabase Storage to a temp file
+          4. Parse text from file (PDF/DOCX/TXT)
+          5. Split text into chunks
+          6. Generate embeddings for all chunks
+          7. Save all chunks to document_chunks table
+          8. Set status to "ready"
 
         On any failure: set status to "failed" and store error_message.
-
-        Args:
-            document_id: UUID string of the document to process.
-
-        Returns:
-            The updated Document record with status="ready".
-
-        Raises:
-            NotFoundError: If the document doesn't exist.
-            DocumentProcessingError: If parsing or embedding fails.
         """
         logger.info(f"Starting processing pipeline for document: {document_id}")
 
-        # --- Fetch the document record ---
         doc = self.get_document(document_id)
         tenant_id = doc.tenant_id
 
-        # --- Mark as "processing" ---
         self._update_status(document_id, DocumentStatus.PROCESSING)
 
+        tmp_file: str | None = None
         try:
-            # --- Step 1: Parse the file ---
-            # Dispatch to the correct parser based on file type
+            # --- Step 1: pull bytes from Storage to a temp file ---
+            # Parsers are filesystem-based (pypdf opens a path); a
+            # /tmp file is cheap and respects Cloud Run's writable
+            # /tmp area. Cleaned up in the finally clause.
+            file_bytes = self._storage_download(doc.file_path)
+            suffix = f".{doc.file_type.value}"
+            fd, tmp_file = tempfile.mkstemp(suffix=suffix, prefix="aicore_")
+            with os.fdopen(fd, "wb") as f:
+                f.write(file_bytes)
+            logger.debug(
+                f"Downloaded {len(file_bytes)} bytes from "
+                f"storage[{doc.file_path}] → {tmp_file}"
+            )
+
+            # --- Step 2: Parse the file ---
             if doc.file_type == FileType.PDF:
-                raw_text, page_count = parse_pdf(doc.file_path)
+                raw_text, page_count = parse_pdf(tmp_file)
             elif doc.file_type == FileType.DOCX:
-                raw_text, page_count = parse_docx(doc.file_path)
+                raw_text, page_count = parse_docx(tmp_file)
             elif doc.file_type == FileType.TXT:
-                raw_text, page_count = parse_txt(doc.file_path)
+                raw_text, page_count = parse_txt(tmp_file)
             else:
                 raise DocumentProcessingError(f"Unsupported file type: {doc.file_type}")
 
             logger.debug(f"Parsed {len(raw_text)} characters from {doc.filename}")
 
-            # --- Step 2: Split text into section-aware chunks ---
-            # The chunker emits ChunkWithSection NamedTuples carrying the
-            # nearest legal marker (Articulo / Seccion / Clausula / ...)
-            # for each chunk. Documents without markers degrade to plain
-            # sliding window with section_ref = None.
+            # --- Step 3: Section-aware chunking ---
             chunks_with_sections = chunk_text_with_sections(raw_text)
             chunk_count = len(chunks_with_sections)
-
             if chunk_count == 0:
-                raise DocumentProcessingError("Document produced no text chunks after parsing")
-
+                raise DocumentProcessingError(
+                    "Document produced no text chunks after parsing"
+                )
             logger.debug(
                 f"Split into {chunk_count} chunks "
                 f"({sum(1 for c in chunks_with_sections if c.section_ref)} with section_ref)"
             )
 
-            # --- Step 3: Generate embeddings for all chunks ---
-            # This makes one API call to OpenAI with all chunks batched
+            # --- Step 4: Embeddings ---
             logger.debug(f"Generating embeddings for {chunk_count} chunks...")
             chunk_texts = [c.content for c in chunks_with_sections]
             embeddings = embed_texts(chunk_texts)
-
-            # Sanity check: one embedding per chunk
             if len(embeddings) != chunk_count:
                 raise DocumentProcessingError(
                     f"Embedding count mismatch: got {len(embeddings)}, expected {chunk_count}"
                 )
 
-            # --- Step 4: Save chunks to the database ---
-            # Delete any chunks from a previous processing run before inserting.
+            # --- Step 5: Persist chunks (replace any from prior run) ---
             self.db.table("document_chunks").delete().eq(
                 "document_id", str(document_id)
             ).execute()
 
-            # Build the list of rows to insert
             now = datetime.now(timezone.utc).isoformat()
             chunk_rows = [
                 {
@@ -265,23 +279,20 @@ class DocumentService:
                     "tenant_id": tenant_id,
                     "content": chunk.content,
                     "chunk_index": idx,
-                    "section_ref": chunk.section_ref,  # NULL when no marker present
-                    "embedding": embedding,  # List of 1536 floats
-                    "country": doc.country,     # Propagated from parent document
-                    "framework": doc.framework, # Propagated from parent document
+                    "section_ref": chunk.section_ref,
+                    "embedding": embedding,
+                    "country": doc.country,
+                    "framework": doc.framework,
                     "created_at": now,
                 }
                 for idx, (chunk, embedding) in enumerate(
                     zip(chunks_with_sections, embeddings)
                 )
             ]
-
-            # Insert all chunks in a single DB operation
-            # This is much faster than inserting one-by-one
             self.db.table("document_chunks").insert(chunk_rows).execute()
             logger.debug(f"Saved {chunk_count} chunks to database")
 
-            # --- Step 5: Update document status to "ready" ---
+            # --- Step 6: Mark ready ---
             now_ts = datetime.now(timezone.utc).isoformat()
             self.db.table("documents").update({
                 "status": DocumentStatus.READY.value,
@@ -294,21 +305,19 @@ class DocumentService:
                 f"Document {document_id} processed successfully: "
                 f"{page_count} pages, {chunk_count} chunks"
             )
-
-            # Return the updated document record
             return self.get_document(document_id)
 
         except Exception as e:
-            # --- Handle any failure: mark document as "failed" ---
-            logger.error(f"Document processing failed for {document_id}: {e}", exc_info=True)
-
+            logger.error(
+                f"Document processing failed for {document_id}: {e}",
+                exc_info=True,
+            )
             self.db.table("documents").update({
                 "status": DocumentStatus.FAILED.value,
                 "error_message": str(e),
                 "processed_at": datetime.now(timezone.utc).isoformat(),
             }).eq("id", str(document_id)).execute()
 
-            # Re-raise so the API layer can return an appropriate error response
             if isinstance(e, (NotFoundError, DocumentProcessingError)):
                 raise
             raise DocumentProcessingError(
@@ -316,52 +325,36 @@ class DocumentService:
                 resource_id=str(document_id),
             )
 
+        finally:
+            if tmp_file and os.path.exists(tmp_file):
+                try:
+                    os.unlink(tmp_file)
+                except OSError as cleanup_exc:
+                    logger.debug(
+                        f"Tmp file cleanup failed (non-fatal): {cleanup_exc}"
+                    )
+
     # ----------------------------------------------------------
     # list_documents
-    # Returns all documents belonging to a tenant.
     # ----------------------------------------------------------
     def list_documents(self, tenant_id: str) -> list[Document]:
-        """
-        List all documents for a given tenant.
-
-        Args:
-            tenant_id: The tenant's identifier.
-
-        Returns:
-            List of Document records, ordered by creation date (newest first).
-        """
+        """List all documents for a given tenant, newest first."""
         result = (
             self.db.table("documents")
             .select("*")
-            .eq("tenant_id", tenant_id)          # CRITICAL: filter by tenant
-            .order("created_at", desc=True)       # Newest first
+            .eq("tenant_id", tenant_id)
+            .order("created_at", desc=True)
             .execute()
         )
-
-        # Convert each DB row dict to a Document model
         return [Document(**row) for row in result.data]
 
     # ----------------------------------------------------------
     # get_document
-    # Returns a single document by ID, with tenant isolation check.
     # ----------------------------------------------------------
     def get_document(self, document_id: str, tenant_id: str | None = None) -> Document:
         """
-        Retrieve a single document by its ID.
-
-        If tenant_id is provided, also verifies the document belongs
-        to that tenant (raises TenantIsolationError if not).
-
-        Args:
-            document_id: UUID of the document to fetch.
-            tenant_id:   If provided, verify ownership.
-
-        Returns:
-            The Document record.
-
-        Raises:
-            NotFoundError: If no document with that ID exists.
-            TenantIsolationError: If the document belongs to a different tenant.
+        Retrieve a single document by ID. If tenant_id is provided,
+        verifies ownership and raises TenantIsolationError otherwise.
         """
         result = (
             self.db.table("documents")
@@ -369,7 +362,6 @@ class DocumentService:
             .eq("id", str(document_id))
             .execute()
         )
-
         if not result.data:
             raise NotFoundError(
                 f"Document not found: {document_id}",
@@ -378,7 +370,6 @@ class DocumentService:
 
         doc = Document(**result.data[0])
 
-        # Tenant isolation check — if tenant_id is provided, verify ownership
         if tenant_id and doc.tenant_id != tenant_id:
             logger.warning(
                 f"Tenant isolation violation: tenant {tenant_id} "
@@ -395,7 +386,45 @@ class DocumentService:
     # _update_status (private helper)
     # ----------------------------------------------------------
     def _update_status(self, document_id: str, status: DocumentStatus) -> None:
-        """Update only the status field of a document record."""
         self.db.table("documents").update(
             {"status": status.value}
         ).eq("id", str(document_id)).execute()
+
+    # ----------------------------------------------------------
+    # Supabase Storage helpers
+    #
+    # The Supabase Python SDK's storage client surfaces different
+    # exception shapes across versions; we normalise by raising
+    # DocumentProcessingError so process_document() can report a
+    # consistent error path.
+    # ----------------------------------------------------------
+    def _storage_upload(
+        self,
+        storage_path: str,
+        file_bytes: bytes,
+        content_type: str,
+    ) -> None:
+        """Upload bytes to the configured bucket. Overwrites if present."""
+        # upsert=true so a retried upload after a partial write
+        # replaces the previous object instead of failing.
+        self.db.storage.from_(self._bucket).upload(
+            path=storage_path,
+            file=file_bytes,
+            file_options={
+                "content-type": content_type,
+                "upsert": "true",
+            },
+        )
+
+    def _storage_download(self, storage_path: str) -> bytes:
+        """Download bytes for a storage object. Raises on missing file."""
+        if not storage_path:
+            raise DocumentProcessingError(
+                "Document has no storage path — cannot process"
+            )
+        try:
+            return self.db.storage.from_(self._bucket).download(storage_path)
+        except Exception as exc:
+            raise DocumentProcessingError(
+                f"Storage download failed for '{storage_path}': {exc}"
+            ) from exc

@@ -30,15 +30,18 @@ MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
 async def upload_document(
     file: UploadFile = File(..., description="PDF or DOCX file to upload"),
     country: str | None = Form(default=None, description="Country this document applies to (e.g. 'costa-rica'). Omit for global documents."),
+    framework: str | None = Form(default=None, description="Normative framework slug (e.g. 'iso_42001'). Omit for framework-agnostic documents."),
     current_user: dict = Depends(get_current_user),
     db: Client = Depends(get_db),
 ) -> DocumentUploadResponse:
     """
     Upload a document file for a tenant.
 
-    The file is saved to disk and a database record is created
-    with status="pending". Processing (parsing + embedding)
-    is triggered separately via POST /documents/{id}/process.
+    The bytes are written to the Supabase Storage bucket
+    `rag-documents` and a `documents` row is created with
+    status="pending". Processing (parsing + embedding) is
+    triggered separately via POST /documents/{id}/process so
+    large files don't block the upload response.
     """
     # Read the file bytes
     file_bytes = await file.read()
@@ -50,6 +53,7 @@ async def upload_document(
         filename=file.filename or "untitled",
         file_bytes=file_bytes,
         country=country,
+        framework=framework,
     )
 
     return DocumentUploadResponse(

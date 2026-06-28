@@ -6,31 +6,33 @@
 # tenant they belong to. This file is the single place where
 # token validation happens.
 #
-# CURRENT STATE (MVP):
-# The verify_token function is STUBBED — it always returns the
-# same hardcoded identity (dev-tenant / dev-user). This lets us
-# build and test all features without a live Supabase auth setup.
+# TWO AUTH PATHS RUN SIDE BY SIDE:
 #
-# WHAT TO REPLACE THIS WITH IN PRODUCTION:
-# Supabase issues JWTs (JSON Web Tokens) when users log in.
-# Each JWT contains claims like:
-#   - sub: the user's unique ID
-#   - email: user's email
-#   - user_metadata.tenant_id: the tenant this user belongs to
+#   Path A — Service key + trusted headers
+#     Used by the Supabase Edge Function proxy. The Edge Function
+#     has already validated the end user's Supabase JWT, so the
+#     sidecar trusts X-Tenant-Id / X-User-Id headers when the
+#     Authorization header carries the shared AI_CORE_SERVICE_KEY.
 #
-# To validate a Supabase JWT:
-#   1. Get the JWT secret from Supabase Settings → API → JWT Secret
-#   2. Use python-jose or PyJWT to decode and verify the token
-#   3. Extract tenant_id and user_id from the claims
+#   Path B — Supabase JWT
+#     Used by direct clients that pass a Supabase auth JWT. The
+#     sidecar decodes the JWT using SUPABASE_JWT_SECRET and
+#     extracts tenant_id from app_metadata.
 #
-# TODO: Replace stub with real Supabase JWT validation
-# TODO: Add token expiry check
-# TODO: Add tenant_id claim extraction from JWT metadata
+# Path A is the production default for GovAI's Edge Function
+# integration. Path B exists so any future caller (mobile, ops
+# scripts, partner integrations) can hit the sidecar without an
+# Edge Function in front.
 # ============================================================
 
+import secrets
+from typing import Any
+
+import jwt
+
+from app.core.config import settings
 from app.core.logging import get_logger
 
-# Get a logger specific to this module
 logger = get_logger(__name__)
 
 # ============================================================
@@ -41,52 +43,94 @@ logger = get_logger(__name__)
 TokenPayload = dict[str, str]
 
 
-def verify_token(token: str) -> TokenPayload:
+def verify_service_key(authorization: str | None) -> bool:
     """
-    Verify an authentication token and return the caller's identity.
+    Check if the Authorization header carries the shared service
+    key issued to the GovAI Edge Function proxy.
 
-    In the MVP, this always returns a hardcoded dev identity so
-    all endpoints work without a real authentication setup.
+    Uses `secrets.compare_digest` to avoid timing-attack leaks
+    of the key length / prefix.
 
     Args:
-        token: The Bearer token from the Authorization header.
-               Currently ignored in the stub implementation.
+        authorization: Raw `Authorization` request header value.
 
     Returns:
-        A dict containing tenant_id and user_id extracted from the token.
-
-    Raises:
-        AuthenticationError: (future) If the token is invalid or expired.
-
-    TODO: Implement real Supabase JWT validation:
-        import jwt  # from PyJWT library
-        from app.core.config import settings
-        payload = jwt.decode(token, settings.supabase_jwt_secret, algorithms=["HS256"])
-        return {
-            "tenant_id": payload["user_metadata"]["tenant_id"],
-            "user_id": payload["sub"],
-        }
+        True iff the header matches AI_CORE_SERVICE_KEY exactly.
     """
-    # Log that we're using the stub — this will remind developers during testing
-    logger.debug(
-        "Auth stub active — returning dev identity. "
-        "Replace verify_token() in security.py before going to production."
-    )
+    if not authorization or not authorization.startswith("Bearer "):
+        return False
 
-    # Return hardcoded development identity
-    # All requests will appear to come from "dev-tenant" / "dev-user"
-    # until real JWT validation is implemented
-    return {
-        "tenant_id": "dev-tenant",  # The tenant this user belongs to
-        "user_id": "dev-user",      # The individual user making the request
-    }
+    configured = settings.ai_core_service_key
+    if not configured:
+        # Service-key auth disabled when the secret isn't configured.
+        # We log once so deployments missing the env var don't fail
+        # silently in a confusing way.
+        logger.debug("Service-key auth skipped: AI_CORE_SERVICE_KEY is empty")
+        return False
+
+    token = authorization.removeprefix("Bearer ").strip()
+    return secrets.compare_digest(token, configured)
+
+
+def verify_supabase_jwt(authorization: str | None) -> TokenPayload | None:
+    """
+    Decode a Supabase JWT and return the caller's identity claims.
+
+    Returns None on any failure (missing header, wrong scheme,
+    expired, bad signature, missing tenant). Callers should treat
+    None as "not authenticated via this path".
+
+    Tenant ID is read from `app_metadata.tenant_id`, which is set
+    by the GovAI Supabase auth hooks when an institution member
+    logs in.
+
+    Args:
+        authorization: Raw `Authorization` request header value.
+
+    Returns:
+        {"tenant_id": str, "user_id": str} or None.
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+
+    if not settings.supabase_jwt_secret:
+        logger.debug("Supabase JWT auth skipped: SUPABASE_JWT_SECRET is empty")
+        return None
+
+    token = authorization.removeprefix("Bearer ").strip()
+
+    try:
+        payload: dict[str, Any] = jwt.decode(
+            token,
+            settings.supabase_jwt_secret,
+            algorithms=["HS256"],
+            audience="authenticated",
+        )
+    except jwt.PyJWTError as exc:
+        logger.warning(f"Supabase JWT verification failed: {exc}")
+        return None
+
+    user_id = payload.get("sub")
+    app_metadata = payload.get("app_metadata") or {}
+    tenant_id = app_metadata.get("tenant_id") or payload.get("tenant_id")
+
+    if not user_id or not tenant_id:
+        logger.warning(
+            "Supabase JWT missing required claims "
+            f"(sub={bool(user_id)}, tenant_id={bool(tenant_id)})"
+        )
+        return None
+
+    return {"tenant_id": str(tenant_id), "user_id": str(user_id)}
 
 
 def extract_token_from_header(authorization: str | None) -> str:
     """
     Extract the Bearer token from an Authorization header value.
 
-    Expected format: "Bearer <token>"
+    Kept for backwards compatibility with callers that want the
+    raw token (tests, debug tooling). Production auth paths above
+    do this inline.
 
     Args:
         authorization: The raw Authorization header value.
@@ -96,20 +140,32 @@ def extract_token_from_header(authorization: str | None) -> str:
 
     Raises:
         ValueError: If the header is missing or malformed.
-
-    Example:
-        token = extract_token_from_header("Bearer eyJhbGciOiJIUzI1NiJ9...")
     """
     if not authorization:
         raise ValueError("Authorization header is missing")
-
-    # The header must start with "Bearer " (case-sensitive per RFC 6750)
     if not authorization.startswith("Bearer "):
         raise ValueError("Authorization header must use Bearer scheme")
 
-    # Split on the first space and return the second part (the token itself)
     parts = authorization.split(" ", 1)
     if len(parts) != 2 or not parts[1]:
         raise ValueError("Authorization header is malformed")
 
     return parts[1]
+
+
+# Kept for backwards compatibility with tests / older callers that
+# imported `verify_token` directly. New code should call
+# `verify_service_key` / `verify_supabase_jwt` from app.api.deps.
+def verify_token(token: str) -> TokenPayload:
+    """
+    Legacy adapter — verifies a raw token against the Supabase JWT
+    path only. Service-key auth requires the header context and
+    must use `verify_service_key` instead.
+
+    Raises:
+        ValueError: If the token cannot be verified as a JWT.
+    """
+    claims = verify_supabase_jwt(f"Bearer {token}")
+    if claims is None:
+        raise ValueError("Unable to verify token via Supabase JWT")
+    return claims

@@ -120,7 +120,26 @@ class ThreadService:
             "created_at": now,
             "updated_at": now,
         }
-        result = self.db.table("threads").insert(payload).execute()
+        try:
+            result = self.db.table("threads").insert(payload).execute()
+        except Exception as exc:
+            # GovAI project IDs are not mirrored in the sidecar's projects table.
+            # When the FK violation fires (23503), retry as an unlinked thread.
+            pg_code = getattr(exc, "code", None)
+            if not pg_code:
+                arg0 = exc.args[0] if exc.args else {}
+                pg_code = arg0.get("code") if isinstance(arg0, dict) else None
+            if not pg_code:
+                pg_code = "23503" if "23503" in str(exc) else None
+            if pg_code == "23503" and request.project_id:
+                logger.warning(
+                    "project_id=%s not found in sidecar projects table — creating unlinked thread",
+                    request.project_id,
+                )
+                payload["project_id"] = None
+                result = self.db.table("threads").insert(payload).execute()
+            else:
+                raise
         if not result.data:
             raise RuntimeError("Failed to create thread")
         return Thread(**result.data[0])

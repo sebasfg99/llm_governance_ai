@@ -22,21 +22,21 @@
 #   ):
 #       tenant_id = current_user["tenant_id"]
 #       ...
-#
-# TODO: Add get_current_tenant() once tenants table is populated
-# TODO: Add rate_limit() dependency for production throttling
 # ============================================================
 
-from fastapi import Depends, Header
+from fastapi import Depends, Header, HTTPException, status
 from supabase import Client
 
-from app.core.security import verify_token, extract_token_from_header, TokenPayload
+from app.core.security import (
+    verify_service_key,
+    verify_supabase_jwt,
+    TokenPayload,
+)
 from app.core.errors import AuthenticationError
 from app.core.logging import get_logger
 from app.core.tenancy import get_validated_tenant, validate_tenant_access
 from app.db.supabase import get_supabase_client
 
-# Logger for this module
 logger = get_logger(__name__)
 
 
@@ -46,62 +46,65 @@ def get_db() -> Client:
 
     The client is a module-level singleton — the same instance
     is reused across all requests (no re-connection overhead).
-
-    Returns:
-        The initialized Supabase Client instance.
-
-    Usage in a route:
-        @router.get("/something")
-        def my_route(db: Client = Depends(get_db)):
-            result = db.table("documents").select("*").execute()
     """
-    # get_supabase_client() returns the already-initialized singleton
     return get_supabase_client()
 
 
 def get_current_user(
-    authorization: str | None = Header(default=None)
+    authorization: str | None = Header(default=None),
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-Id"),
+    x_user_id: str | None = Header(default=None, alias="X-User-Id"),
 ) -> TokenPayload:
     """
-    FastAPI dependency that authenticates the incoming request.
+    Authenticate the incoming request via either auth path.
 
-    Reads the Authorization header, extracts the Bearer token,
-    verifies it, and returns the caller's identity.
+    PATH A — Service key + trusted headers (GovAI Edge Function proxy):
+        Authorization: Bearer <AI_CORE_SERVICE_KEY>
+        X-Tenant-Id:   <institution_id::text>
+        X-User-Id:     <auth.users.id>
 
-    Args:
-        authorization: Injected by FastAPI from the "Authorization" request header.
-                       Value format: "Bearer <token>"
+      The Edge Function has already validated the end-user's Supabase
+      JWT. The sidecar trusts the X-* headers iff the service key
+      matches. Both headers are required — anything else is a
+      misconfigured proxy and we 401 immediately rather than
+      silently downgrade to anonymous.
+
+    PATH B — Supabase JWT (direct caller):
+        Authorization: Bearer <supabase-jwt>
+
+      tenant_id is read from app_metadata.tenant_id. Used by ops
+      scripts and any future caller that does not sit behind the
+      Edge Function.
 
     Returns:
-        A dict with "tenant_id" and "user_id" keys.
+        {"tenant_id": str, "user_id": str}
 
     Raises:
-        AuthenticationError: If the header is missing or the token is invalid.
-
-    NOTE: In the current MVP stub, any token (or no token) returns
-    the dev identity. The real validation is in security.verify_token().
+        HTTPException 401: If neither path successfully authenticates.
     """
-    # For the MVP stub, we skip token extraction and just return dev identity.
-    # This means ALL requests succeed regardless of the Authorization header.
-    # TODO: Remove this bypass when real auth is implemented.
-    if True:  # TODO: Change to "if authorization" when real auth is added
-        return verify_token(authorization or "stub-token")
+    # Path A: service-key + X-* headers
+    if verify_service_key(authorization):
+        if not x_tenant_id or not x_user_id:
+            logger.warning(
+                "Service-key auth succeeded but required headers missing "
+                f"(tenant_id={bool(x_tenant_id)}, user_id={bool(x_user_id)})"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Service-key auth requires X-Tenant-Id and X-User-Id headers",
+            )
+        return {"tenant_id": x_tenant_id, "user_id": x_user_id}
 
-    # The code below is the REAL implementation pattern — currently unreachable.
-    # It will be activated when the stub above is removed.
-    try:
-        # Extract the raw token string from "Bearer <token>"
-        token = extract_token_from_header(authorization)
-    except ValueError as e:
-        # Re-raise as our application's AuthenticationError
-        raise AuthenticationError(str(e))
+    # Path B: Supabase JWT
+    jwt_claims = verify_supabase_jwt(authorization)
+    if jwt_claims is not None:
+        return jwt_claims
 
-    # Validate the token and extract identity claims
-    try:
-        return verify_token(token)
-    except Exception as e:
-        logger.warning(f"Token verification failed: {e}")
-        raise AuthenticationError("Invalid or expired token")
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Unauthorized",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 # ============================================================
