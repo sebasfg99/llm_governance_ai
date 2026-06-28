@@ -23,7 +23,9 @@
 # ============================================================
 
 import os
+import re
 import tempfile
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -41,6 +43,19 @@ from app.domain.documents.chunking import chunk_text_with_sections
 from app.domain.documents.embeddings import embed_texts
 
 logger = get_logger(__name__)
+
+
+def _sanitize_storage_filename(filename: str) -> str:
+    """
+    Make a filename safe for Supabase Storage keys.
+    Strips accents, replaces spaces with underscores, removes chars
+    that aren't alphanumeric, hyphens, underscores, or dots.
+    """
+    nfkd = unicodedata.normalize("NFKD", filename)
+    ascii_str = nfkd.encode("ascii", "ignore").decode("ascii")
+    safe = re.sub(r"[^\w.\-]", "_", ascii_str)
+    safe = re.sub(r"_+", "_", safe).strip("_")
+    return safe or "document"
 
 
 # MIME types used when uploading to Storage. Required by the
@@ -150,11 +165,13 @@ class DocumentService:
         doc_row = result.data[0]
         document_id = doc_row["id"]
 
-        # Storage path scheme: {tenant_id}/{document_id}/{filename}
+        # Storage path scheme: {tenant_id}/{document_id}/{safe_filename}
         # Using the document UUID as a directory means we never
         # collide even when two documents share a filename, and we
         # can delete a document's storage tree by prefix.
-        storage_path = f"{tenant_id}/{document_id}/{filename}"
+        # Supabase Storage rejects keys with spaces / accents — sanitize.
+        safe_filename = _sanitize_storage_filename(filename)
+        storage_path = f"{tenant_id}/{document_id}/{safe_filename}"
 
         try:
             self._storage_upload(
@@ -289,7 +306,10 @@ class DocumentService:
                     zip(chunks_with_sections, embeddings)
                 )
             ]
-            self.db.table("document_chunks").insert(chunk_rows).execute()
+            _CHUNK_BATCH_SIZE = 50
+            for batch_start in range(0, len(chunk_rows), _CHUNK_BATCH_SIZE):
+                batch = chunk_rows[batch_start : batch_start + _CHUNK_BATCH_SIZE]
+                self.db.table("document_chunks").insert(batch).execute()
             logger.debug(f"Saved {chunk_count} chunks to database")
 
             # --- Step 6: Mark ready ---

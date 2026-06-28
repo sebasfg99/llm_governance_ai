@@ -73,11 +73,10 @@ COUNTRY_CODE_TO_SLUG: dict[str, str] = {
     "CR": "costa-rica",
     "PA": "panama",
     "DO": "republica-dominicana",
-    # "GT": "guatemala",
-    # "SV": "el-salvador",
-    # "HN": "honduras",
-    # "NI": "nicaragua",
-    # Add new institutions here, then in src/lib/country-slug-map.ts.
+    "GT": "guatemala",
+    "SV": "el-salvador",
+    "HN": "honduras",
+    "NI": "nicaragua",
 }
 
 

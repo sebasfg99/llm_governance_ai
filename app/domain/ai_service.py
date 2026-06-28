@@ -480,6 +480,7 @@ class AIService:
             top_k=request.top_k,
             include_global=request.include_global,
             country=request.country,
+            industry=request.industry,
             framework_filter=request.framework_filter,
         )
         logger.debug(f"Retrieved {len(retrieved_chunks)} context chunks")

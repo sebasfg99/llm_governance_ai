@@ -418,3 +418,51 @@ opt-in (no parte del flujo principal).
 
 - [Pipeline RAG completo](rag/full_pipeline.md)
 - [Decisiones y trade-offs](decisions/tradeoffs.md)
+
+---
+
+## Checklist manual: `country` + `industry` en todas las rutas LLM
+
+### Pre-condiciones
+
+1. Aplicar migración `008_industry_codes.sql` en Supabase (Python sidecar DB).
+2. Colocar SUGEF 10-07 y SUGEF 18-16 en `docs/admin/Ciberseguridad/Costa Rica/`.
+3. Re-ejecutar: `PYTHONPATH=. python scripts/seed_documents.py`
+4. Confirmar en DB: `SELECT filename, industry_codes, country FROM document_chunks WHERE filename ILIKE '%SUGEF 10%' LIMIT 5;`
+   → Esperado: `industry_codes = '{bank,cooperative}'`, `country = 'costa-rica'`
+
+### Escenarios (5 × 3 preguntas)
+
+| Escenario | Pregunta de prueba | Criterio de éxito |
+|-----------|-------------------|-------------------|
+| CR + cooperative | ¿Qué es el gobierno corporativo? | ≥1 chunk local CR (SUGEF 24-22/CONASSIF) + ≥1 global (ISO/NIST) |
+| CR + cooperative | ¿Qué controles aplican a decisiones automatizadas de crédito? | SUGEF 10-07 + NIST/ISO (requiere PDF indexado) |
+| CR + bank | ¿Qué obligaciones de ciberseguridad aplican? | CONASSIF / SUGEF 18-16 + global OWASP/ISO |
+| PA + bank | ¿Qué normativa de ciberseguridad aplica en Panamá? | Chunks PA locales + globales; sin chunks CR |
+| GT + fintech | ¿Qué dice ISO 42001 sobre comité de gobernanza? | Solo globales; sin SUGEF/CONASSIF (fintech no aplica) |
+
+**Verificar siempre:**
+- `retrieved_chunk_count > 0`
+- Mix de chunks locales + globales en la respuesta
+- Sin citas de regulaciones inventadas
+- Log del sidecar muestra: `country=<slug>, industry=<code>`
+
+### Verificación payload Edge Function
+
+En devtools (Network → `agent-chat`), confirmar que el body enviado tiene:
+```json
+{ "country": "costa-rica", "industry": "cooperative", "include_global": true }
+```
+
+### Test panel de admin
+
+1. Admin → Prompts → seleccionar prompt → "Probar este prompt"
+2. Verificar que aparecen los selectores **País** e **Industria**
+3. Confirmar que "Enviar prueba" está deshabilitado hasta seleccionar ambos
+4. Seleccionar CR + cooperative → enviar pregunta → verificar respuesta contextualizada
+
+### Guard de locale incompleto (UI)
+
+1. Institución sin country/industry → abrir agente → el primer mensaje muestra aviso
+2. Ir a Configuración → banner de advertencia rojo visible
+3. CO edita país e industria → guarda → banner desaparece

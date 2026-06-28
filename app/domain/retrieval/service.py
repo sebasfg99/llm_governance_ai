@@ -89,6 +89,7 @@ class RetrievalService:
         top_k: int | None = None,
         include_global: bool = True,
         country: str | None = None,
+        industry: str | None = None,
         framework_filter: list[str] | None = None,
         use_hybrid: bool = False,
     ) -> list[ChunkResult]:
@@ -100,7 +101,8 @@ class RetrievalService:
           2. Call match_chunks RPC for tenant-specific chunks
           3. Optionally call match_global_chunks for shared library
           4. Merge, deduplicate, and re-rank results
-          5. Return top_k results
+          5. Apply industry post-filter (Layer-3 sector docs)
+          6. Return top_k results
 
         Args:
             tenant_id:        Only search this tenant's documents.
@@ -110,6 +112,10 @@ class RetrievalService:
             include_global:   If True, also search the global shared library
                               and merge results. Default: True.
             country:          Country filter (e.g. "costa-rica").
+            industry:         Institution industry code (e.g. "cooperative").
+                              Chunks tagged with specific industry_codes are
+                              included only if they match; chunks tagged ALL
+                              or NULL are always included.
             framework_filter: Optional list of framework slugs. If provided,
                               only chunks tagged with one of these frameworks
                               (or with NULL framework) are returned. None /
@@ -133,7 +139,7 @@ class RetrievalService:
 
         logger.info(
             f"Retrieving top-{top_k} chunks (candidate_k={candidate_k}) for "
-            f"tenant={tenant_id}, country={country}, "
+            f"tenant={tenant_id}, country={country}, industry={industry}, "
             f"frameworks={normalized_frameworks}, query='{query[:80]}...'"
         )
 
@@ -231,6 +237,15 @@ class RetrievalService:
         # --- Step 5: Re-rank ---
         ranked_chunks = rerank_chunks(unique_chunks, query)
 
+        # --- Step 5c: Industry filter (Layer-3 sector documents) ---
+        # Applied after reranking so the rank order is not affected by
+        # chunks that are about to be discarded.
+        if industry:
+            ranked_chunks = self._filter_by_industry(ranked_chunks, industry)
+            logger.debug(
+                f"Industry filter '{industry}': {len(ranked_chunks)} chunks remaining"
+            )
+
         # --- Step 5b: Per-document diversity cap ---
         # Keep all chunks but reorder so each document contributes at most
         # max_per_document chunks before any document contributes a second
@@ -308,11 +323,8 @@ class RetrievalService:
             )
 
         # Convert the raw DB rows into ChunkResult objects.
-        # section_ref is read with .get(...) because rows produced by an
-        # older RPC (pre-migration 005) won't carry the column. Falling
-        # back to None keeps retrieval functional during the rollout
-        # window where the SQL function may have been updated before
-        # the chunks are re-processed.
+        # section_ref and industry_codes are read with .get(...) because rows
+        # produced by older RPCs (pre-migration 005/008) won't carry the columns.
         return [
             ChunkResult(
                 chunk_id=str(row["id"]),
@@ -322,6 +334,7 @@ class RetrievalService:
                 chunk_index=row["chunk_index"],
                 similarity=float(row["similarity"]),
                 section_ref=row.get("section_ref"),
+                industry_codes=row.get("industry_codes"),
             )
             for row in (result.data or [])
         ]
@@ -370,6 +383,34 @@ class RetrievalService:
                 chunk_index=row["chunk_index"],
                 similarity=float(row["similarity"]),
                 section_ref=row.get("section_ref"),
+                industry_codes=row.get("industry_codes"),
             )
             for row in (result.data or [])
         ]
+
+    def _filter_by_industry(
+        self,
+        chunks: list[ChunkResult],
+        industry: str | None,
+    ) -> list[ChunkResult]:
+        """
+        Filter chunks by institution industry for Layer-3 sector documents.
+
+        When industry is None, all chunks are returned (no filtering).
+
+        Permissive rules (always include when industry is set):
+          - industry_codes is None or empty  → treat as ALL (transition safety net)
+          - industry_codes contains 'ALL'
+          - industry_codes contains the institution's industry code
+
+        Exclude only when industry_codes is a non-empty list that contains
+        specific codes AND does NOT include the institution's industry.
+        """
+        if not industry:
+            return chunks
+        result: list[ChunkResult] = []
+        for chunk in chunks:
+            codes = chunk.industry_codes
+            if not codes or "ALL" in codes or industry in codes:
+                result.append(chunk)
+        return result

@@ -82,6 +82,20 @@ FRAMEWORK_FOLDER_MAP = {
     "PROTECCION DE DATOS PERSONALES": "local_data_protection",
 }
 
+# Layer-3 sector frameworks: SUGEF and CONASSIF apply to regulated
+# financial institutions (bank + cooperative) only.
+# All other frameworks (ISO, NIST, GDPR…) are Layer 1-2 → industry_codes=['ALL'].
+SECTOR_FRAMEWORKS: frozenset[str] = frozenset(
+    {"sugef_10_07", "sugef_18_16", "sugef_24_22", "conassif"}
+)
+
+
+def industry_codes_for_framework(framework: str | None) -> list[str]:
+    """Return the industry_codes list to tag a document with."""
+    if framework in SECTOR_FRAMEWORKS:
+        return ["bank", "cooperative"]
+    return ["ALL"]
+
 
 def _normalize_topic_key(name: str) -> str:
     nfkd = unicodedata.normalize("NFKD", name)
@@ -219,19 +233,19 @@ def seed_documents(folder: Path, force: bool = False) -> None:
             skipped += 1
             continue
 
+        industry_codes = industry_codes_for_framework(framework)
+
         try:
             if existing:
                 logger.info(
                     f"REPROCESS: '{filename}' [{label}] "
                     f"(prev status={existing['status']})"
                 )
-                # Patch the framework on the document row BEFORE reprocessing.
-                # process_document() reads doc.framework via get_document() and
-                # propagates it to every chunk — if the row still has framework=NULL
-                # (set by the ALTER TABLE default in migration 004) all chunks will
-                # inherit NULL even though we now know the correct slug.
+                # Patch the framework and industry_codes on the document row
+                # BEFORE reprocessing so process_document() propagates them
+                # to every chunk.
                 db.table("documents").update(
-                    {"framework": framework}
+                    {"framework": framework, "industry_codes": industry_codes}
                 ).eq("id", existing["id"]).execute()
                 service.process_document(existing["id"])
                 logger.info(f"OK: '{filename}' [{label}] reprocessed (doc_id={existing['id']})")
@@ -245,6 +259,10 @@ def seed_documents(folder: Path, force: bool = False) -> None:
                     country=country,
                     framework=framework,
                 )
+                # Tag industry_codes on the newly created document row.
+                db.table("documents").update(
+                    {"industry_codes": industry_codes}
+                ).eq("id", str(doc.id)).execute()
                 service.process_document(str(doc.id))
                 logger.info(f"OK: '{filename}' [{label}] ingested (doc_id={doc.id})")
             processed += 1

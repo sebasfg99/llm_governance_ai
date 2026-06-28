@@ -40,17 +40,19 @@ class ChunkResult:
     into the LLM prompt assembly step.
 
     Attributes:
-        chunk_id:     UUID of the chunk in the database
-        document_id:  UUID of the parent document
-        tenant_id:    Which tenant this chunk belongs to
-        content:      The actual text of the chunk
-        chunk_index:  Position within the parent document
-        similarity:   Cosine similarity score (0.0 to 1.0)
-                      Higher = more relevant to the query
-        section_ref:  Most recent legal section marker the chunk belongs
-                      to (e.g. "Articulo 9", "Seccion 6.1.2"). None when
-                      the parent document has no formal markers or the
-                      chunk falls before the first marker.
+        chunk_id:       UUID of the chunk in the database
+        document_id:    UUID of the parent document
+        tenant_id:      Which tenant this chunk belongs to
+        content:        The actual text of the chunk
+        chunk_index:    Position within the parent document
+        similarity:     Cosine similarity score (0.0 to 1.0)
+                        Higher = more relevant to the query
+        section_ref:    Most recent legal section marker the chunk belongs
+                        to (e.g. "Articulo 9", "Seccion 6.1.2"). None when
+                        the parent document has no formal markers or the
+                        chunk falls before the first marker.
+        industry_codes: Industry codes this chunk applies to (e.g. ['bank',
+                        'cooperative']). None or ['ALL'] means always include.
     """
     chunk_id: str
     document_id: str
@@ -59,6 +61,7 @@ class ChunkResult:
     chunk_index: int
     similarity: float
     section_ref: str | None = None
+    industry_codes: list[str] | None = None
 
 
 # ============================================================

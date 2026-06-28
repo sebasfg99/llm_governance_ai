@@ -94,6 +94,16 @@ class AIQueryRequest(BaseModel):
         example="costa-rica",
     )
 
+    # Industry code for Layer-3 sector document filtering.
+    # Layer 1-2 (ISO, NIST, OWASP…) are always returned regardless of this value.
+    # Layer 3 (SUGEF, CONASSIF…) are filtered: only included if industry_codes on
+    # the chunk contains this code OR 'ALL'. Graceful: None means no filter applied.
+    industry: str | None = Field(
+        default=None,
+        description="Institution industry code (bank, cooperative, insurance, fintech, other).",
+        example="cooperative",
+    )
+
     # L2 memory link — when present, AIService loads the project's
     # profile + risk register and injects a compact summary into the prompt.
     project_id: UUID | None = Field(
