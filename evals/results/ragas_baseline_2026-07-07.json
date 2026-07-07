@@ -1,0 +1,342 @@
+{
+  "label": "baseline",
+  "date": "2026-07-07",
+  "base_url": "http://localhost:8000",
+  "top_k": 5,
+  "model": "gemini/gemini-2.5-flash",
+  "idk": {
+    "accuracy": 1.0,
+    "total": 3,
+    "correct": 3,
+    "cases": {
+      "idk-01": {
+        "declined": true,
+        "answer_head": "No tengo información suficiente en los documentos disponibles para responder con certeza. Te recomiendo aportar más contexto o consultar la fuente original."
+      },
+      "idk-02": {
+        "declined": true,
+        "answer_head": "No tengo información específica sobre los montos de las multas que impone la Superintendencia de Bancos de Singapur (MAS) por incumplimientos en modelos de IA. "
+      },
+      "idk-03": {
+        "declined": true,
+        "answer_head": "No tengo información específica sobre el Código de Trabajo de Costa Rica y su regulación del teletrabajo para científicos de datos. Te recomendaría consultar di"
+      }
+    }
+  },
+  "responses": {
+    "iso-01": {
+      "answer": "La norma ISO/IEC 42001 es un estándar internacional para sistemas de gestión de inteligencia artificial (IA). Su objetivo principal es proporcionar a las organizaciones un marco de referencia para cumplir con los objetivos organizacionales y abordar los riesgos relacionados con el diseño y la operación de los sistemas de IA. [Fuente: ISO42001_Replica.pdf]\n\nEsta norma es idéntica (IDT) a la norma internacional ISO/IEC 42001:2023 “Information technology — Artificial intelligence — Management system”. [Fuente: ISO42001_Replica.pdf]\n\n**Próximo paso:** Si tu rol es de *project_leader* o *technical_leader*, te sugiero revisar el Anexo A de la ISO/IEC 42001 para entender los objetivos de control y controles de referencia que pueden aplicarse a tus proyectos de IA.",
+      "latency_s": 19.7,
+      "cost_usd": 0.001386,
+      "n_contexts": 5
+    },
+    "iso-02": {
+      "answer": "Según la ISO 42001, la política de IA de una organización debe incluir lo siguiente:\n\n*   **Fundamentación en políticas de gobierno:** Debe basarse en las políticas que el órgano de gobierno establezca en nombre de la organización. La Norma INTE/ISO/IEC 38507 proporciona una guía para el gobierno de los sistemas de IA durante todo su ciclo de vida. [Fuente: ISO42001_Replica.pdf]\n*   **Revisión planificada:** La política debe ser revisada a intervalos planificados o con una frecuencia adicional según sea necesario, para asegurar su idoneidad, adecuación y eficacia continuas. [Fuente: ISO42001_Replica.pdf]\n*   **Responsabilidad de desarrollo y revisión:** Un rol aprobado por la alta dirección debe ser el responsable del desarrollo, la revisión y la evaluación de la política de IA o de sus componentes. [Fuente: ISO42001_Replica.pdf]\n*   **Evaluación de oportunidades de mejora:** La revisión debe incluir la evaluación de oportunidades para la mejora de las políticas y el enfoque de la organización respecto a la gestión de los sistemas de IA, en respuesta a cambios en el entorno de la organización, circunstancias del negocio, condiciones legales o el entorno técnico. [Fuente: ISO42001_Replica.pdf]\n*   **Consideración de revisiones de la alta dirección:** La revisión de la política de IA debe tener en cuenta los resultados de las revisiones de la alta dirección. [Fuente: ISO42001_Replica.pdf]\n*   **Definición de roles y responsabilidades:** Debe establecer la rendición de cuentas dentro de la organización para mantener un enfoque responsable en la implementación, operación y gestión de los sistemas de IA, definiendo y asignando roles y responsabilidades en materia de IA de acuerdo con las necesidades de la organización. [Fuente: ISO42001_Replica.pdf]\n\n**Próximo paso más urgente:** Asegúrate de que tu organización ha asignado un rol específico para el desarrollo y la revisión de la política de IA, y que este rol está aprobado por la alta dirección.\n\n**Acción concreta:** Inicia la definición de los roles y responsabilidades en materia de IA dentro de tu organización, si aún no lo has hecho, y documenta quién será el responsable de la política de IA.",
+      "latency_s": 16.4,
+      "cost_usd": 0.002077,
+      "n_contexts": 5
+    },
+    "iso-03": {
+      "answer": "La norma ISO 42001 establece varios requisitos clave para la evaluación de impacto de los sistemas de IA:\n\n1. **Objetivo de la Evaluación**: Se debe evaluar el impacto del sistema de IA sobre las personas, grupos y la sociedad a lo largo de todo su ciclo de vida.\n\n2. **Proceso de Evaluación**: La organización debe establecer un proceso para identificar y evaluar las consecuencias potenciales que pueden derivarse del sistema de IA. Esto incluye considerar el propósito y uso previsto del sistema.\n\n3. **Circunstancias para la Evaluación**: Se deben definir las circunstancias en las que es necesaria una evaluación del impacto, tales como:\n   - La criticidad del propósito y el contexto de uso del sistema.\n   - La complejidad de la tecnología de IA y el nivel de automatización.\n   - La sensibilidad de los tipos de datos que procesa el sistema.\n\n4. **Documentación**: La organización debe documentar los resultados de las evaluaciones de impacto y conservarlos durante un periodo determinado.\n\n5. **Participación de Expertos**: Se sugiere involucrar a investigadores, especialistas en IA y expertos de dominio relevantes durante el proceso de evaluación.\n\n6. **Consideraciones de Riesgo**: La evaluación debe incluir la identificación de riesgos que puedan afectar a los derechos humanos, el bienestar físico o psicológico de las personas, y la sociedad en general.\n\nPara avanzar, te recomiendo que revises los procedimientos actuales de tu organización para asegurarte de que cumplen con estos requisitos y, si es necesario, establecer un plan para implementar las evaluaciones de impacto.",
+      "latency_s": 20.3,
+      "cost_usd": 0.000608,
+      "n_contexts": 5
+    },
+    "iso-04": {
+      "answer": "═══ ROL ═══\ncompliance_officer\n\nLa norma ISO 42001 establece requisitos específicos para la gestión de riesgos de IA, integrándola en el sistema de gestión de la IA. Aquí te detallo los puntos clave:\n\n*   **Identificación y Planificación:** La organización debe identificar los riesgos y oportunidades relacionados con los sistemas de IA, considerando los contextos interno y externo. Debe planificar acciones para abordar estos riesgos y oportunidades, integrarlas en los procesos del sistema de gestión de la IA y evaluar su eficacia. Es crucial conservar información documentada sobre estas acciones. [Fuente: ISO42001_Replica.pdf, Sección 6.1.1]\n*   **Proceso de Evaluación del Riesgo de IA:** Se debe definir y establecer un proceso de evaluación del riesgo de IA que esté alineado con la política y los objetivos de IA de la organización. Este proceso puede incluir una evaluación del impacto del sistema de IA. [Fuente: ISO42001_Replica.pdf, Sección 6.1.2]\n*   **Consideraciones Adicionales:** La norma sugiere que la gestión de riesgos puede variar según el sector y tipo de industria, y que la definición de riesgo es amplia para adaptarse a cualquier sector. También hace referencia a la norma ISO/IEC 23894 para guías sobre cómo implementar la gestión del riesgo en organizaciones que desarrollan, proveen o utilizan productos, sistemas y servicios de IA. [Fuente: ISO42001_Replica.pdf, Sección 6.1.1, Notas 3, 4 y 5]\n\nComo Compliance Officer, el próximo paso más urgente es **asegurarse de que la institución tenga un proceso documentado y establecido para la evaluación de riesgos de IA que cumpla con estos requisitos de ISO 42001 y que esté alineado con la política y objetivos de IA de la organización.**",
+      "latency_s": 14.2,
+      "cost_usd": 0.001961,
+      "n_contexts": 5
+    },
+    "iso-05": {
+      "answer": "ISO 42001 establece que la organización debe llevar a cabo auditorías internas a intervalos planificados para evaluar la conformidad y la eficacia del sistema de gestión de la IA. Los puntos clave son:\n\n1. **Objetivos de la Auditoría**: Determinar si el sistema de gestión de la IA cumple con los requisitos de la organización y con los requisitos del estándar ISO 42001.\n2. **Programa de Auditoría**: La organización debe planificar, establecer, implementar y mantener un programa de auditoría que incluya la frecuencia, métodos, responsabilidades y requisitos de planificación.\n3. **Selección de Auditores**: Los auditores deben ser seleccionados para asegurar la objetividad e imparcialidad del proceso de auditoría.\n4. **Comunicación de Resultados**: Los resultados de las auditorías deben ser comunicados a las personas relevantes de la alta dirección.\n5. **Evidencia Documentada**: Debe estar disponible información documentada como evidencia de la implementación de los programas de auditoría y de los resultados obtenidos.\n\nEl próximo paso urgente sería programar la próxima auditoría interna para asegurar el cumplimiento continuo del sistema de gestión de IA.",
+      "latency_s": 15.3,
+      "cost_usd": 0.000595,
+      "n_contexts": 5
+    },
+    "iso-06": {
+      "answer": "La mejora continua en el contexto de ISO 42001 se refiere a un enfoque sistemático para optimizar el sistema de gestión de la inteligencia artificial (IA) dentro de una organización. Este concepto implica establecer, implementar, mantener y mejorar continuamente un sistema que garantice el uso responsable de la IA, adaptándose a cambios en el entorno y en las necesidades de la organización.\n\nLos elementos clave de la mejora continua según ISO 42001 incluyen:\n\n1. **Evaluación Regular**: Realizar autoevaluaciones y revisiones periódicas del sistema de gestión de IA para identificar áreas de mejora.\n2. **Adaptación a Cambios**: Ajustar los procesos y controles en respuesta a cambios en el comportamiento de la IA y en las expectativas de las partes interesadas.\n3. **Integración de Feedback**: Incorporar retroalimentación de usuarios y otros actores relevantes para mejorar el rendimiento y la funcionalidad del sistema.\n4. **Documentación**: Mantener registros claros de las decisiones y acciones tomadas en relación con las mejoras implementadas.\n5. **Enfoque Basado en Riesgos**: Aplicar un enfoque basado en el riesgo para asegurar que se implementen controles adecuados en función de los casos de uso específicos de IA.\n\nPara avanzar en la mejora continua, es recomendable que tu organización establezca un plan de acción que incluya la identificación de métricas de rendimiento y la programación de revisiones periódicas del sistema de gestión de IA.",
+      "latency_s": 16.4,
+      "cost_usd": 0.000605,
+      "n_contexts": 5
+    },
+    "iso-07": {
+      "answer": "ISO 42001 establece que las organizaciones deben asegurar que el personal que trabaja con sistemas de IA esté adecuadamente capacitado y consciente de sus roles y responsabilidades. Esto incluye:\n\n1. **Capacitación Continua**: Las organizaciones deben integrar currículos de capacitación adecuados en los requisitos de aprendizaje empresarial, asegurando que el personal mantenga la conciencia sobre los objetivos de gestión de riesgos de IA y su papel en alcanzarlos.\n\n2. **Conocimiento de Normativas**: El personal debe estar informado sobre las políticas organizacionales, leyes y regulaciones aplicables, así como las mejores prácticas y normas de la industria relacionadas con la IA.\n\n3. **Detección y Gestión de Sesgos**: Es esencial que el personal esté capacitado para interpretar las salidas y decisiones de los modelos de IA, así como para detectar y gestionar sesgos en los datos.\n\n4. **Roles y Responsabilidades Claras**: La organización debe documentar y comunicar claramente los roles y responsabilidades de cada miembro del personal involucrado en el ciclo de vida de los sistemas de IA.\n\n5. **Mecanismos de Retroalimentación**: Se deben establecer procedimientos para recibir retroalimentación del personal sobre el desempeño de los sistemas de IA y su uso responsable.\n\n6. **Gestión de Cambios**: Las políticas deben incluir mecanismos para comunicar y reconocer cambios sustanciales en los sistemas de IA.\n\nPara avanzar, te recomiendo revisar los programas de capacitación actuales en tu organización y asegurarte de que aborden estos aspectos.",
+      "latency_s": 18.0,
+      "cost_usd": 0.000604,
+      "n_contexts": 5
+    },
+    "iso-08": {
+      "answer": "Según la norma ISO 42001, la alta dirección desempeña un papel crucial en el sistema de gestión de IA. Sus responsabilidades incluyen:\n\n1. **Liderazgo y Compromiso**: Debe demostrar liderazgo y compromiso con el sistema de gestión de IA, asegurando que se establezcan políticas y objetivos de IA que sean compatibles con la dirección estratégica de la organización.\n\n2. **Integración de Requisitos**: Es responsable de integrar los requisitos del sistema de gestión de IA en los procesos de negocio de la organización.\n\n3. **Disponibilidad de Recursos**: Debe asegurarse de que se dispongan de los recursos necesarios para el sistema de gestión de IA.\n\n4. **Comunicación de Importancia**: Tiene que comunicar la importancia de una gestión eficaz de la IA y el cumplimiento de los requisitos del sistema.\n\n5. **Evaluación del Desempeño**: Debe informar sobre el desempeño del sistema de gestión de IA y asegurar que se logren los resultados previstos.\n\n6. **Promoción de Mejora Continua**: Debe dirigir y apoyar a las personas para contribuir a la eficacia del sistema y promover la mejora continua.\n\nEl próximo paso urgente sería revisar y actualizar la política de IA de acuerdo con estos principios, asegurando que esté documentada y comunicada dentro de la organización.",
+      "latency_s": 16.5,
+      "cost_usd": 0.000598,
+      "n_contexts": 5
+    },
+    "cr-01": {
+      "answer": "El Acuerdo CONASSIF 5-24 establece los Lineamientos Generales del Reglamento General de Gobierno y Gestión de la Tecnología de Información. Este acuerdo fue aprobado por el Consejo Nacional de Supervisión del Sistema Financiero (CONASSIF) y rige a partir de su publicación en el diario oficial La Gaceta, que ocurrió el 22 de julio de 2024.\n\nEste reglamento tiene como objetivo regular la gestión de la tecnología de información en las entidades supervisadas, asegurando prácticas adecuadas y alineadas con la normativa vigente. \n\nPara más detalles sobre su contenido o implicaciones, puedes revisar el documento completo o consultar con un experto en la materia.",
+      "latency_s": 13.5,
+      "cost_usd": 0.000529,
+      "n_contexts": 5
+    },
+    "cr-02": {
+      "answer": "El Reglamento General de Gobierno y Gestión de la Tecnología de Información de CONASSIF aplica a las entidades y empresas supervisadas del sistema financiero costarricense. Esto incluye bancos, cooperativas, entidades de seguros y otras instituciones que operan bajo la supervisión de CONASSIF. El reglamento establece requerimientos mínimos para la gestión de la tecnología de información (TI) que estas entidades deben cumplir.\n\nAdemás, el reglamento busca reforzar las funciones de los órganos de dirección y alta gerencia en relación con la seguridad de la información y la ciberseguridad, así como actualizar el marco de gestión de TI para incorporar tecnologías emergentes y mejores prácticas.\n\n**Próximo paso:** Asegúrate de que tu entidad esté al tanto de estos requerimientos y evalúa si se están implementando adecuadamente.",
+      "latency_s": 15.7,
+      "cost_usd": 0.000592,
+      "n_contexts": 5
+    },
+    "cr-03": {
+      "answer": "El objetivo principal de la Ley Nº 8968 de Protección de la Persona frente al Tratamiento de sus Datos Personales es garantizar el respeto a los derechos fundamentales de toda persona, sin importar su nacionalidad, residencia o domicilio. Esta ley se centra en proteger el derecho a la autodeterminación informativa, lo que implica que las personas tienen control sobre sus datos personales y cómo estos son tratados.\n\nAdemás, la ley establece un marco regulatorio que busca asegurar la privacidad y protección de los datos personales en el contexto de la economía digital, promoviendo la transparencia y la responsabilidad en el manejo de la información personal por parte de entidades públicas y privadas.\n\nPara más detalles, puedes consultar el texto completo de la ley o su reglamentación. \n\n**Acción concreta:** Revisa los procedimientos internos de tu institución para asegurarte de que cumplen con los requisitos establecidos en la Ley 8968.",
+      "latency_s": 16.0,
+      "cost_usd": 0.000579,
+      "n_contexts": 5
+    },
+    "cr-04": {
+      "answer": "El Acuerdo SUGEF 24-22 regula los lineamientos generales para la calificación de las entidades supervisadas en el ámbito de la ciberseguridad. Este reglamento establece las normas y directrices que deben seguir las instituciones financieras para garantizar la seguridad de la información y la resiliencia cibernética. Su entrada en vigor fue el 1° de enero de 2023, y fue aprobado por el Consejo Nacional de Supervisión del Sistema Financiero.\n\nLos principales aspectos que regula incluyen:\n\n1. **Requisitos de seguridad**: Establece las medidas que las entidades deben implementar para proteger sus sistemas de información.\n2. **Evaluación de riesgos**: Obliga a las instituciones a realizar evaluaciones periódicas de los riesgos cibernéticos a los que están expuestas.\n3. **Planes de respuesta**: Define la necesidad de contar con planes de respuesta ante incidentes de seguridad cibernética.\n4. **Capacitación**: Promueve la formación continua del personal en temas de ciberseguridad.\n5. **Supervisión y auditoría**: Establece mecanismos de supervisión y auditoría para asegurar el cumplimiento de las normativas.\n\nComo próximo paso, asegúrate de que tu entidad esté alineada con estos lineamientos y considera realizar una revisión de los procesos internos relacionados con la ciberseguridad.",
+      "latency_s": 19.6,
+      "cost_usd": 0.000612,
+      "n_contexts": 5
+    },
+    "cr-05": {
+      "answer": "El reglamento CONASSIF 4-16 establece principios y estándares sobre gobierno corporativo que deben considerar las entidades supervisadas en Costa Rica. Algunos de los aspectos clave incluyen:\n\n1. **Estructura de Propiedad y Naturaleza Jurídica**: Las entidades deben adaptar su gobierno corporativo según su estructura de propiedad y naturaleza jurídica, así como el alcance y complejidad de sus operaciones.\n\n2. **Gestión del Riesgo**: Se enfatiza la importancia de incorporar la gestión del riesgo en la estrategia corporativa, considerando el perfil de riesgo de la entidad y el impacto potencial de sus operaciones sobre terceros.\n\n3. **Supervisión Basada en Principios**: El reglamento promueve un enfoque basado en principios para la supervisión, lo que implica que las entidades deben tener flexibilidad para implementar prácticas que se alineen con sus características específicas.\n\n4. **Plazos de Adecuación**: Se establece que se debe otorgar a las entidades un plazo prudencial para adecuarse a nuevas regulaciones, asegurando que tengan tiempo suficiente para implementar los cambios necesarios.\n\n5. **Consulta y Participación**: El reglamento incluye un proceso de consulta donde las entidades supervisadas pueden enviar comentarios y observaciones sobre las propuestas de regulación.\n\n6. **Aprobación y Vigencia**: El reglamento fue aprobado por el CONASSIF y tiene vigencia a partir de su publicación, estableciendo un marco normativo claro para el gobierno corporativo en el sector financiero.\n\nPara más detalles específicos, puedes revisar el texto completo del reglamento. Como próximo paso, considera revisar las políticas internas de tu entidad para asegurar su alineación con estos principios.",
+      "latency_s": 17.9,
+      "cost_usd": 0.000702,
+      "n_contexts": 5
+    },
+    "cr-06": {
+      "answer": "El Reglamento 45061 de Costa Rica establece varias disposiciones clave sobre la gobernanza de la ciberseguridad, que incluyen:\n\n1. **Obligaciones de la Administración Central**: Se instruye a los jerarcas de la Administración Central a adoptar e implementar medidas de gobernanza en ciberseguridad. Esto incluye designar responsables institucionales, elaborar políticas internas, y planes de gestión de riesgos cibernéticos.\n\n2. **Cumplimiento de Lineamientos**: Las instituciones deben aplicar los lineamientos técnicos, protocolos, estándares y buenas prácticas emitidos por el Ministerio de Ciencia, Innovación, Tecnología y Telecomunicaciones (MICITT) en materia de ciberseguridad.\n\n3. **Mejora de Capacidades**: Se requiere cumplir con las medidas técnicas emitidas por la Dirección de Ciberseguridad del MICITT, orientadas a mejorar las capacidades de prevención, detección, respuesta y recuperación ante ciberamenazas.\n\n4. **Accesibilidad de Documentos**: Todos los lineamientos y documentos relacionados con ciberseguridad deben estar disponibles, actualizados y accesibles en el sitio web oficial del MICITT.\n\n5. **Comunicación de Cambios**: El MICITT debe comunicar cualquier aprobación, modificación o derogación de instrumentos relacionados con ciberseguridad a través de los canales oficiales.\n\n6. **Fortalecimiento de la Resiliencia Cibernética**: Se enfatiza la importancia de fortalecer la resiliencia cibernética del Estado costarricense mediante la implementación de políticas y prácticas adecuadas.\n\nPara más detalles, puedes consultar el documento completo del Reglamento 45061. Como próximo paso, asegúrate de revisar las políticas internas de tu institución para alinearlas con estas disposiciones.",
+      "latency_s": 21.4,
+      "cost_usd": 0.00069,
+      "n_contexts": 5
+    },
+    "cr-07": {
+      "answer": "La Estrategia Nacional de Ciberseguridad de Costa Rica [REDACTED:PHONE] contempla varios pilares y objetivos estratégicos para fortalecer la resiliencia cibernética del país.\n\nEntre sus principales aspectos se encuentran:\n\n*   **Reforzar la gobernanza de ciberseguridad:** Esto incluye reestructurar el MICITT para centralizar los esfuerzos de ciberseguridad, fortalecer la instancia de coordinación nacional con herramientas jurídicas y técnicas, y asegurar que esta instancia cuente con personal especializado y calificado. También busca diseñar un marco de gobernanza nacional que promueva la participación de múltiples partes interesadas (gobierno, sector privado, academia, sociedad civil). [Fuente: NCS Costa Rica - 10Nov2023 SPA.pdf]\n*   **Impulsar una cultura de ciberseguridad:** El gobierno fomentará la asignación de recursos para este propósito en el sector público. [Fuente: NCS Costa Rica - 10Nov2023 SPA.pdf]\n*   **Fortalecer la cooperación nacional e internacional:** Promueve la colaboración y el intercambio de información sobre ciberseguridad, incluyendo iniciativas intergubernamentales e intersectoriales, alianzas con el sector privado y la academia, y mecanismos de cooperación con operadores de infraestructuras críticas. A nivel internacional, busca maximizar los beneficios de la cooperación cibernética, promover convenios y acuerdos, y fortalecer la participación del CSIRT-CR en redes regionales e internacionales. [Fuente: NCS Costa Rica - 10Nov2023 SPA.pdf]\n*   **Marco jurídico y reglamentario:** Costa Rica cuenta con un marco jurídico y reglamentario para proteger a la sociedad contra la ciberdelincuencia y promover un entorno cibernético seguro, en conformidad con principios de inclusión y confianza. [Fuente: NCS Costa Rica - 10Nov2023 SPA.pdf]\n*   **Compromisos internacionales:** El país ha suscrito convenios y tratados internacionales relacionados con la ciberseguridad, incluyendo la protección de derechos humanos, la prevención de la violencia contra la mujer, el desarrollo sostenible, la legislación sobre ciberdelitos y el combate a la delincuencia organizada transnacional. [Fuente: NCS Costa Rica - 10Nov2023 SPA.pdf]\n\nEl próximo paso más urgente para la implementación de esta estrategia es establecer y poner en marcha una hoja de ruta para reestructurar el MICITT, consolidando y centralizando los esfuerzos y actividades relacionados con la ciberseguridad a nivel nacional.",
+      "latency_s": 16.5,
+      "cost_usd": 0.002369,
+      "n_contexts": 5
+    },
+    "cr-08": {
+      "answer": "Como banco costarricense, debes considerar varias normativas locales relacionadas con la tecnología de información y ciberseguridad al implementar un sistema de inteligencia artificial (IA):\n\n1. **Reglamento General de Gestión de la Tecnología de Información (Acuerdo Conassif 5-17)**: Establece los requerimientos mínimos para la gestión de TI, incluyendo la seguridad de la información y la ciberseguridad. Es fundamental que tu banco cumpla con estos lineamientos para garantizar la seguridad y resiliencia operativa digital.\n\n2. **Estrategia Nacional de Ciberseguridad [REDACTED:PHONE]**: Define el marco normativo y las directrices para la ciberseguridad en el país, incluyendo la creación de instancias como el Centro de Respuesta de Incidentes de Seguridad Informática (CSIRT-CR), que puede ser un recurso valioso para la gestión de incidentes de ciberseguridad.\n\n3. **Ley de Protección de la Persona frente al Tratamiento de sus Datos Personales (Ley 8968)**: Regula el tratamiento de datos personales, lo cual es crucial al implementar sistemas de IA que procesen información sensible de clientes.\n\n4. **Normativa del Banco Central de Costa Rica**: Incluye regulaciones sobre sistemas de pago y seguridad en transacciones financieras, que son relevantes si tu sistema de IA interactúa con estos procesos.\n\n5. **ISO 42001**: Aunque es una norma internacional, su adopción puede ser beneficiosa para establecer un sistema de gestión de IA responsable y alineado con las mejores prácticas globales.\n\n6. **EU AI Act**: Si tu banco tiene operaciones en la Unión Europea o interactúa con clientes de allí, es importante considerar esta normativa, que regula el uso de IA y establece requisitos de gestión de riesgos.\n\n**Próximo paso**: Revisa cada una de estas normativas y evalúa cómo se aplican a tu proyecto de implementación de IA. Puedes comenzar por realizar un análisis de brechas para identificar áreas de cumplimiento y posibles mejoras.",
+      "latency_s": 20.6,
+      "cost_usd": 0.000708,
+      "n_contexts": 5
+    },
+    "x-01": {
+      "answer": "Según el Reglamento Europeo de IA (EU AI Act), los sistemas de evaluación de solvencia crediticia pueden clasificarse como sistemas de alto riesgo. Esto se debe a que estos sistemas suelen ser utilizados para tomar decisiones que afectan significativamente a los individuos, como la concesión de créditos, lo que puede tener un impacto directo en su situación financiera y bienestar.\n\nPara que un sistema de IA sea considerado de alto riesgo, debe cumplir con ciertas condiciones, como ser un componente de seguridad de un producto que requiera evaluación de conformidad de terceros. Los sistemas de evaluación de solvencia crediticia generalmente caen bajo esta categoría debido a su naturaleza crítica en la toma de decisiones financieras.\n\n**Próximo paso:** Si estás involucrado en la implementación de un sistema de este tipo, asegúrate de realizar una evaluación de conformidad y documentar cómo se están gestionando los riesgos asociados.",
+      "latency_s": 14.1,
+      "cost_usd": 0.000554,
+      "n_contexts": 5
+    },
+    "x-02": {
+      "answer": "El marco de gestión de riesgos de IA del NIST (AI RMF) se compone de cuatro funciones principales que ayudan a las organizaciones a abordar los riesgos asociados con los sistemas de inteligencia artificial. Estas funciones son:\n\n1. **GOVERN**: Establece la gobernanza y la estructura organizativa para la gestión de riesgos de IA, asegurando que se implementen políticas y procedimientos adecuados.\n\n2. **MAP**: Implica la identificación y el mapeo de los riesgos asociados con los sistemas de IA, así como la evaluación de su contexto y el impacto potencial.\n\n3. **MEASURE**: Se centra en la medición y evaluación de los riesgos identificados, permitiendo a las organizaciones comprender mejor su exposición y la efectividad de las medidas de mitigación.\n\n4. **MANAGE**: Involucra la implementación de estrategias y controles para gestionar los riesgos de IA, asegurando que se tomen acciones adecuadas para mitigar los riesgos identificados.\n\nEstas funciones están diseñadas para ser aplicadas en contextos específicos de los sistemas de IA y a lo largo de las diferentes etapas del ciclo de vida de la IA. \n\nComo próximo paso, te recomiendo revisar la documentación del NIST AI RMF para profundizar en cada función y su aplicación práctica.",
+      "latency_s": 15.8,
+      "cost_usd": 0.000594,
+      "n_contexts": 5
+    },
+    "x-03": {
+      "answer": "La inyección de prompts (prompt injection) es una técnica en la que un atacante elabora entradas (prompts) maliciosas para manipular o explotar el comportamiento de un modelo de lenguaje grande (LLM). Esto puede implicar insertar información engañosa, sesgada o maliciosa en un prompt para influir en la salida del modelo, lo que puede llevar a resultados no deseados o perjudiciales.\n\nEste tipo de ataque representa un riesgo significativo para las aplicaciones que utilizan LLM debido a varias razones:\n\n1. **Manipulación de Salidas**: Los atacantes pueden inducir al modelo a generar contenido dañino o inapropiado, afectando la integridad de la aplicación.\n\n2. **Fugas de Datos**: A través de prompts maliciosos, se puede acceder a información sensible o personal, comprometiendo la privacidad de los usuarios.\n\n3. **Falta de Transparencia**: La lógica detrás de cómo un LLM responde a un prompt no es tan transparente como en los sistemas de software tradicionales, lo que dificulta la detección de fallos o vulnerabilidades.\n\n4. **Inconsistencias y Sesgos**: Los prompts generados por usuarios pueden resultar en respuestas inconsistentes o sesgadas, lo que puede llevar a violaciones de cumplimiento o éticas.\n\n5. **Riesgos de Seguridad**: La inyección de prompts puede ser utilizada para eludir controles de seguridad establecidos, aumentando la vulnerabilidad de la aplicación.\n\nPara mitigar estos riesgos, es crucial implementar controles robustos de validación de entradas y monitoreo del comportamiento del LLM. \n\n**Acción concreta**: Considera revisar las políticas de seguridad y los controles de validación de entradas en las aplicaciones que utilizan LLM para asegurar que estén adecuadamente protegidas contra inyecciones de prompts.",
+      "latency_s": 18.6,
+      "cost_usd": 0.000792,
+      "n_contexts": 5
+    },
+    "x-04": {
+      "answer": "El GDPR establece varios principios fundamentales para el tratamiento de datos personales en su Artículo 5. Estos principios son:\n\n1. **Licitud, lealtad y transparencia**: Los datos deben ser tratados de manera lícita, leal y transparente en relación con el interesado.\n2. **Limitación de la finalidad**: Los datos deben ser recogidos con fines determinados, explícitos y legítimos, y no deben ser tratados de manera incompatible con esos fines.\n3. **Minimización de datos**: Los datos deben ser adecuados, pertinentes y limitados a lo necesario en relación con los fines para los que son tratados.\n4. **Exactitud**: Los datos deben ser exactos y, si es necesario, actualizados. Se deben tomar medidas razonables para suprimir o rectificar sin dilación los datos inexactos.\n5. **Limitación del plazo de conservación**: Los datos personales deben ser mantenidos de forma que se permita la identificación de los interesados durante no más tiempo del necesario para los fines del tratamiento.\n6. **Integridad y confidencialidad**: Los datos deben ser tratados de manera que se garantice su seguridad, incluyendo la protección contra el tratamiento no autorizado o ilegal y contra la pérdida, destrucción o daño accidental.\n\nPara más detalles, puedes consultar el texto completo del GDPR en el [Fuente: CELEX_32018R1725_ES_TXT.pdf]. \n\nComo próximo paso, asegúrate de que tu organización esté alineada con estos principios y realiza una revisión de los procesos de tratamiento de datos personales.",
+      "latency_s": 19.1,
+      "cost_usd": 0.000646,
+      "n_contexts": 5
+    },
+    "x-05": {
+      "answer": "PCI DSS establece 12 requisitos principales para proteger los datos de tarjetas de pago, que incluyen:\n\n1. **Proteger los datos del titular de la tarjeta almacenados**.\n2. **Proteger los datos de tarjetahabiente con criptografía robusta durante la transmisión a través de redes abiertas y públicas**.\n3. **Mantener un programa de gestión de vulnerabilidades**.\n4. **Proteger todos los sistemas y redes de software malicioso**.\n5. **Desarrollar y mantener sistemas y softwares seguros**.\n6. **Implementar medidas sólidas de control de acceso**:\n   - Restringir el acceso a los componentes del sistema y a los datos de tarjetahabiente según la necesidad de conocimiento.\n   - Identificar a los usuarios y autenticar el acceso a los componentes del sistema.\n   - Restringir el acceso físico a los datos de tarjetahabiente.\n7. **Monitorear y verificar las redes regularmente**:\n   - Registrar y supervisar todos los accesos a los componentes del sistema y a los datos de tarjetahabiente.\n   - Poner a prueba regularmente la seguridad de los sistemas y de las redes.\n8. **Mantener una política de protección informática**.\n\nEstos requisitos son fundamentales para garantizar la seguridad de los datos de los tarjetahabientes y mitigar riesgos asociados con el procesamiento de pagos. \n\nComo próximo paso, asegúrate de revisar y evaluar si tu organización cumple con estos requisitos y, si es necesario, implementa las medidas adecuadas.",
+      "latency_s": 18.8,
+      "cost_usd": 0.000647,
+      "n_contexts": 5
+    },
+    "x-06": {
+      "answer": "MITRE ATLAS y el reporte SAFE AI abordan diversas amenazas relacionadas con sistemas de inteligencia artificial. Aquí hay un resumen de las amenazas destacadas:\n\n1. **Amenazas Adversariales**: Se refiere a ataques intencionados que buscan manipular el comportamiento de los sistemas de IA, como la inyección de datos maliciosos para alterar resultados.\n\n2. **Amenazas No Adversariales**: Incluyen riesgos accidentales o no intencionados, como errores en el procesamiento de datos o fallos en el sistema que pueden tener consecuencias negativas.\n\n3. **Riesgos Relacionados con los Datos**: Incluyen datos de entrenamiento sesgados, datos de baja calidad o incompletos, y violaciones de privacidad en el procesamiento de datos.\n\n4. **Riesgos del Modelo**: Se relacionan con el sobreajuste o subajuste del modelo, falta de robustez ante perturbaciones, y comportamientos inesperados en situaciones no contempladas durante el entrenamiento.\n\n5. **Riesgos de Despliegue**: Involucran la integración inadecuada del sistema en el entorno operativo y la falta de supervisión humana adecuada durante su operación.\n\n6. **Riesgos Legales y de Cumplimiento**: Incluyen el incumplimiento de normativas y regulaciones aplicables, lo que puede resultar en sanciones o daños a la reputación.\n\nPara mitigar estas amenazas, se recomienda implementar controles específicos y realizar evaluaciones continuas de los sistemas de IA. \n\n**Próximo paso**: Considera realizar una evaluación de riesgos en tu sistema de IA para identificar y mitigar posibles amenazas.",
+      "latency_s": 28.5,
+      "cost_usd": 0.000657,
+      "n_contexts": 5
+    },
+    "idk-01": {
+      "answer": "No tengo información suficiente en los documentos disponibles para responder con certeza. Te recomiendo aportar más contexto o consultar la fuente original.",
+      "latency_s": 13.3,
+      "cost_usd": 0.000551,
+      "n_contexts": 5
+    },
+    "idk-02": {
+      "answer": "No tengo información específica sobre los montos de las multas que impone la Superintendencia de Bancos de Singapur (MAS) por incumplimientos en modelos de IA. Te recomendaría consultar directamente la normativa de la MAS o su sitio web oficial para obtener detalles precisos sobre sanciones y multas relacionadas con la inteligencia artificial. \n\nSi necesitas información sobre regulaciones de IA en otras jurisdicciones, puedo ayudarte con eso.",
+      "latency_s": 9.9,
+      "cost_usd": 0.000521,
+      "n_contexts": 5
+    },
+    "idk-03": {
+      "answer": "No tengo información específica sobre el Código de Trabajo de Costa Rica y su regulación del teletrabajo para científicos de datos. Te recomendaría consultar directamente el texto del Código de Trabajo o buscar asesoría legal especializada en derecho laboral en Costa Rica para obtener la información más precisa y actualizada. \n\nComo acción concreta, puedes acceder al sitio web del Ministerio de Trabajo y Seguridad Social de Costa Rica para revisar la normativa vigente sobre teletrabajo.",
+      "latency_s": 10.2,
+      "cost_usd": 0.000484,
+      "n_contexts": 5
+    }
+  },
+  "ragas": {
+    "aggregate": {
+      "faithfulness": 0.7755,
+      "answer_relevancy": 0.9414,
+      "context_precision": 0.8876,
+      "context_recall": 0.8864
+    },
+    "per_case": [
+      {
+        "id": "iso-01",
+        "faithfulness": 0.75,
+        "answer_relevancy": 0.8877,
+        "context_precision": 0.25,
+        "context_recall": 1.0
+      },
+      {
+        "id": "iso-02",
+        "faithfulness": 0.7333,
+        "answer_relevancy": 0.9759,
+        "context_precision": 1.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": "iso-03",
+        "faithfulness": 0.8125,
+        "answer_relevancy": 0.9741,
+        "context_precision": 1.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": "iso-04",
+        "faithfulness": 0.8235,
+        "answer_relevancy": 0.9022,
+        "context_precision": 1.0,
+        "context_recall": 0.6667
+      },
+      {
+        "id": "iso-05",
+        "faithfulness": 0.75,
+        "answer_relevancy": 0.9886,
+        "context_precision": 1.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": "iso-06",
+        "faithfulness": 0.8182,
+        "answer_relevancy": 0.9816,
+        "context_precision": 0.8667,
+        "context_recall": 0.6667
+      },
+      {
+        "id": "iso-07",
+        "faithfulness": 0.7273,
+        "answer_relevancy": 0.9533,
+        "context_precision": 1.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": "iso-08",
+        "faithfulness": 0.8,
+        "answer_relevancy": 0.9835,
+        "context_precision": 0.7,
+        "context_recall": 1.0
+      },
+      {
+        "id": "cr-01",
+        "faithfulness": 0.75,
+        "answer_relevancy": 0.9304,
+        "context_precision": 0.5,
+        "context_recall": 1.0
+      },
+      {
+        "id": "cr-02",
+        "faithfulness": 0.5714,
+        "answer_relevancy": 0.9728,
+        "context_precision": 0.7556,
+        "context_recall": 1.0
+      },
+      {
+        "id": "cr-03",
+        "faithfulness": 0.5,
+        "answer_relevancy": 0.8381,
+        "context_precision": 1.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": "cr-04",
+        "faithfulness": 0.1538,
+        "answer_relevancy": 0.8857,
+        "context_precision": 1.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": "cr-05",
+        "faithfulness": 0.8235,
+        "answer_relevancy": 0.9815,
+        "context_precision": 1.0,
+        "context_recall": 0.5
+      },
+      {
+        "id": "cr-06",
+        "faithfulness": 0.7143,
+        "answer_relevancy": 0.9446,
+        "context_precision": 0.95,
+        "context_recall": 1.0
+      },
+      {
+        "id": "cr-07",
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.9334,
+        "context_precision": 1.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": "cr-08",
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.9126,
+        "context_precision": 0.8333,
+        "context_recall": 0.0
+      },
+      {
+        "id": "x-01",
+        "faithfulness": 0.75,
+        "answer_relevancy": 0.9351,
+        "context_precision": 1.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": "x-02",
+        "faithfulness": 0.9412,
+        "answer_relevancy": 0.9768,
+        "context_precision": 0.8667,
+        "context_recall": 1.0
+      },
+      {
+        "id": "x-03",
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.8577,
+        "context_precision": 0.8056,
+        "context_recall": 0.6667
+      },
+      {
+        "id": "x-04",
+        "faithfulness": 0.6429,
+        "answer_relevancy": 0.9612,
+        "context_precision": 1.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": "x-05",
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.9822,
+        "context_precision": 1.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": "x-06",
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.9516,
+        "context_precision": 1.0,
+        "context_recall": 1.0
+      }
+    ]
+  }
+}

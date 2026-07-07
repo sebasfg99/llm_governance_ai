@@ -1,0 +1,15 @@
+# Dependencias SOLO para evaluación (scripts/ragas_eval.py).
+# No forman parte del runtime del sidecar — instalar bajo demanda:
+#   .venv/bin/pip install -r requirements-eval.txt
+#
+# Nota de compatibilidad: ragas (hasta 0.4.x) importa módulos de
+# langchain-community 0.3.x; el stack langchain se pinnea <0.4 para
+# evitar ModuleNotFoundError (vertexai) con langchain 1.x.
+ragas>=0.4,<0.5
+datasets>=2.19
+langchain<0.4
+langchain-community<0.4
+langchain-core<0.4
+langchain-openai<0.3
+python-dotenv>=1.0
+pandas>=2.0
