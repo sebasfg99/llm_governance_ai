@@ -41,6 +41,12 @@ UseCaseLiteral = Literal[
     "controls_generation",
     "control_ranking",
     "iso_checklist",
+    # GovAI UI-dedicated use cases (GUIA flujos 5-7): same RAG
+    # streaming pipeline as chatbot, but with format-specific
+    # system prompts (see scripts/seed_prompts.py).
+    "field_draft",
+    "step_guide",
+    "deliverable_review",
 ]
 
 

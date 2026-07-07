@@ -123,11 +123,25 @@ def _looks_like_why_query(query: str) -> bool:
 # these is used without an explicit thread_id we auto-create a
 # thread so future turns continue the same conversation.
 # ------------------------------------------------------------
-_CONVERSATIONAL_USE_CASES = {"chatbot", "risk_intake", "policy_generation"}
+_CONVERSATIONAL_USE_CASES = {
+    "chatbot",
+    "risk_intake",
+    "policy_generation",
+    # Variantes UI dedicadas del chatbot — mismo flujo conversacional.
+    "field_draft",
+    "step_guide",
+    "deliverable_review",
+}
 
 # Use cases that bypass the full RAG pipeline and use dedicated structured prompts.
 # These always run with stream=False and return a JSON string as response_text.
 _STRUCTURED_USE_CASES = {"control_ranking", "iso_checklist"}
+
+# UI use cases whose task is GENERATIVE (drafting/review), not Q&A: the
+# retrieved chunks are supporting material, so "la respuesta no está en
+# los chunks" es esperado y no debe reescribir el borrador como
+# abstención (should_have_said_idk).
+_GENERATIVE_UI_USE_CASES = {"field_draft", "step_guide", "deliverable_review"}
 
 
 class AIService:
@@ -628,7 +642,10 @@ class AIService:
         # legitimately answer using project-level data that is NOT in the
         # retrieved document chunks. Clear should_have_said_idk so the
         # guardrail does not overwrite a correct project-grounded answer.
-        if prepared.has_project_context and evaluation.get("should_have_said_idk"):
+        if (
+            prepared.has_project_context
+            or request.use_case in _GENERATIVE_UI_USE_CASES
+        ) and evaluation.get("should_have_said_idk"):
             evaluation = {**evaluation, "should_have_said_idk": False}
         try:
             guardrails_result = validate_response_guardrails(
