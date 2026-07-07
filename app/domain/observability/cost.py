@@ -27,7 +27,7 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-PRICING_VERSION = "2025.04.refresh"
+PRICING_VERSION = "2026.07.refresh"
 
 
 @dataclass(frozen=True)
@@ -53,9 +53,13 @@ MODEL_PRICING: dict[str, ModelPrice] = {
     "o1-mini":               ModelPrice(3.00, 12.00, "Reasoning compact"),
     "o1":                    ModelPrice(15.00, 60.00, "Reasoning"),
     # Google Gemini
-    "gemini-1.5-flash":      ModelPrice(0.075, 0.30, "Cheapest Gemini"),
-    "gemini-1.5-pro":        ModelPrice(1.25, 5.00, "Mid-tier Gemini"),
-    "gemini-2.0-flash":      ModelPrice(0.10, 0.40, "Latest flash"),
+    "gemini-1.5-flash":      ModelPrice(0.075, 0.30, "Legacy flash"),
+    "gemini-1.5-pro":        ModelPrice(1.25, 5.00, "Legacy pro"),
+    "gemini-2.0-flash":      ModelPrice(0.10, 0.40, "Legacy 2.0 flash"),
+    # Output price includes thinking tokens when thinking is enabled.
+    "gemini-2.5-flash":      ModelPrice(0.30, 2.50, "Default sidecar model"),
+    "gemini-2.5-pro":        ModelPrice(1.25, 10.00, "Edge high-reasoning tier"),
+    "gemini-3-flash-preview": ModelPrice(0.50, 3.00, "Edge default (preview; estimated pricing)"),
     # Embeddings (input only)
     "text-embedding-3-small": ModelPrice(0.02, 0.0, "1536-d embeddings"),
     "text-embedding-3-large": ModelPrice(0.13, 0.0, "3072-d embeddings"),

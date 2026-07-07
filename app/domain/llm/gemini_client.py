@@ -19,11 +19,23 @@ class GeminiClient:
         self._client = genai.Client(api_key=settings.gemini_api_key)
         logger.debug("Gemini client configured (google-genai SDK)")
 
-    def _generation_config(self, temperature: float, max_tokens: int) -> types.GenerateContentConfig:
-        return types.GenerateContentConfig(
-            temperature=temperature,
-            max_output_tokens=max_tokens,
-        )
+    # Models that support (and default to) "thinking". Without an
+    # explicit budget they spend thinking tokens billed as output —
+    # unbounded thinking drained the prepaid credits in <1 month.
+    _THINKING_MODEL_PREFIXES = ("gemini-2.5", "gemini-3")
+
+    def _generation_config(
+        self, temperature: float, max_tokens: int, model: str
+    ) -> types.GenerateContentConfig:
+        kwargs: dict = {
+            "temperature": temperature,
+            "max_output_tokens": max_tokens,
+        }
+        if model.startswith(self._THINKING_MODEL_PREFIXES):
+            kwargs["thinking_config"] = types.ThinkingConfig(
+                thinking_budget=settings.gemini_thinking_budget,
+            )
+        return types.GenerateContentConfig(**kwargs)
 
     def _handle_error(self, e: Exception, streaming: bool = False) -> None:
         error_str = str(e).lower()
@@ -51,7 +63,7 @@ class GeminiClient:
             response = self._client.models.generate_content(
                 model=model,
                 contents=prompt,
-                config=self._generation_config(temperature, max_tokens),
+                config=self._generation_config(temperature, max_tokens, model),
             )
         except Exception as e:
             self._handle_error(e)
@@ -92,7 +104,7 @@ class GeminiClient:
             stream = self._client.models.generate_content_stream(
                 model=model,
                 contents=prompt,
-                config=self._generation_config(temperature, max_tokens),
+                config=self._generation_config(temperature, max_tokens, model),
             )
         except Exception as e:
             self._handle_error(e, streaming=True)

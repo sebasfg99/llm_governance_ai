@@ -6,18 +6,24 @@
 # It reads the configured provider from settings, calls the
 # correct client, and returns a normalized LLMResponse.
 #
-# CURRENT ROUTING LOGIC (MVP):
-# Config-based only — reads LLM_DEFAULT_PROVIDER from .env.
-# No per-request overrides in the MVP.
+# ROUTING LOGIC:
+# Config-based dispatch (LLM_DEFAULT_PROVIDER) with automatic
+# single-hop fallback to the other provider on upstream failures
+# (rate limit, 5xx, auth, connection). Validation errors — e.g.
+# prompt injection detected by guardrails — never trigger
+# fallback: they would fail identically on any provider.
+#
+# Streaming fallback policy: we only fail over if the primary
+# stream errors BEFORE emitting its first token. Once tokens have
+# reached the client we cannot transparently switch providers
+# (the partial output would be inconsistent), so mid-stream
+# errors propagate to the caller.
 #
 # FUTURE ROUTING STRATEGIES:
 # - Per-request: caller specifies the provider in the API request
 # - Use-case-based: "summarization" → Gemini, "Q&A" → GPT
-# - Fallback: if OpenAI fails, retry with Gemini
 # - Cost-based: route cheap requests to cheaper models
-#
-# TODO: Add retry logic with fallback provider
-# TODO: Add circuit breaker pattern for provider outages
+# - Circuit breaker to skip a provider that is known-down
 # ============================================================
 
 from typing import Iterator
@@ -32,10 +38,36 @@ from app.domain.llm.gemini_client import GeminiClient
 
 logger = get_logger(__name__)
 
+# Safe per-provider defaults used when llm_fallback_model is not set.
+_FALLBACK_DEFAULT_MODELS = {
+    "openai": "gpt-4o-mini",
+    "gemini": "gemini-2.5-flash",
+}
+
+
+def _resolve_fallback() -> tuple[str, str] | None:
+    """
+    Return (provider, model) for the fallback hop, or None when
+    fallback is disabled or misconfigured (same provider as primary).
+    """
+    if not settings.llm_fallback_enabled:
+        return None
+
+    primary = settings.llm_default_provider.lower()
+    provider = (settings.llm_fallback_provider or "").lower()
+    if not provider:
+        provider = "gemini" if primary == "openai" else "openai"
+    if provider == primary or provider not in _FALLBACK_DEFAULT_MODELS:
+        return None
+
+    model = settings.llm_fallback_model or _FALLBACK_DEFAULT_MODELS[provider]
+    return provider, model
+
 
 class LLMRouter:
     """
-    Routes LLM generation requests to the configured provider.
+    Routes LLM generation requests to the configured provider,
+    failing over once to the other provider on upstream errors.
 
     Instantiates provider clients lazily (only when needed).
     The same router instance can be reused across requests.
@@ -46,45 +78,32 @@ class LLMRouter:
             prompt="Your full assembled prompt here...",
             use_case="default_rag",
         ))
-        print(response.text)
         print(f"Used: {response.model_provider}/{response.model_name}")
     """
 
     def __init__(self) -> None:
-        """
-        Initialize the router.
-
-        Clients are created lazily — the OpenAI or Gemini SDK
-        is only imported/configured when first needed.
-        """
-        # These are initialized to None and created on first use
-        # This avoids startup errors if only one provider is configured
+        # Clients are created lazily — the OpenAI or Gemini SDK is
+        # only configured when first needed, so the app still boots
+        # when only one provider has credentials.
         self._openai_client: OpenAIClient | None = None
         self._gemini_client: GeminiClient | None = None
 
         logger.debug(
             f"LLM Router initialized. "
             f"Default provider: {settings.llm_default_provider}, "
-            f"Default model: {settings.llm_default_model}"
+            f"Default model: {settings.llm_default_model}, "
+            f"Fallback enabled: {settings.llm_fallback_enabled}"
         )
 
     def route(self, request: LLMRequest) -> LLMResponse:
         """
-        Route an LLM request to the configured provider.
-
-        Reads LLM_DEFAULT_PROVIDER from settings to decide which
-        client to use. Calls the client's generate() method and
-        wraps the result in a normalized LLMResponse.
-
-        Args:
-            request: An LLMRequest containing the assembled prompt.
-
-        Returns:
-            An LLMResponse with the generated text and metadata.
+        Route an LLM request to the configured provider, retrying
+        once on the fallback provider if the primary raises an
+        UpstreamError.
 
         Raises:
-            UpstreamError: If the provider call fails.
-            ValueError: If LLM_DEFAULT_PROVIDER is not "openai" or "gemini".
+            UpstreamError: If the primary fails and fallback is
+                disabled/unavailable, or if both providers fail.
         """
         provider = settings.llm_default_provider.lower()
         model = settings.llm_default_model
@@ -95,23 +114,42 @@ class LLMRouter:
             f"prompt_length={len(request.prompt)} chars"
         )
 
-        # Dispatch to the correct provider client
+        try:
+            return self._call(provider, model, request)
+        except UpstreamError as primary_err:
+            fallback = _resolve_fallback()
+            if fallback is None:
+                raise
+            fb_provider, fb_model = fallback
+            logger.warning(
+                f"Primary provider '{provider}' failed ({primary_err.message}). "
+                f"Failing over to {fb_provider}/{fb_model}."
+            )
+            try:
+                return self._call(fb_provider, fb_model, request)
+            except UpstreamError as fallback_err:
+                raise UpstreamError(
+                    f"Both LLM providers failed. "
+                    f"{provider}: {primary_err.message} | "
+                    f"{fb_provider}: {fallback_err.message}",
+                    detail={
+                        "primary_provider": provider,
+                        "primary_error": primary_err.message,
+                        "fallback_provider": fb_provider,
+                        "fallback_error": fallback_err.message,
+                    },
+                )
+
+    def _call(self, provider: str, model: str, request: LLMRequest) -> LLMResponse:
+        """Dispatch one non-streaming call to a specific provider."""
         if provider == "openai":
             response_text, latency_ms, prompt_tokens, completion_tokens = (
-                self._get_openai_client().generate(
-                    prompt=request.prompt,
-                    model=model,
-                )
+                self._get_openai_client().generate(prompt=request.prompt, model=model)
             )
-
         elif provider == "gemini":
             response_text, latency_ms, prompt_tokens, completion_tokens = (
-                self._get_gemini_client().generate(
-                    prompt=request.prompt,
-                    model=model,
-                )
+                self._get_gemini_client().generate(prompt=request.prompt, model=model)
             )
-
         else:
             raise UpstreamError(
                 f"Unknown LLM provider: '{provider}'. "
@@ -119,11 +157,13 @@ class LLMRouter:
             )
 
         logger.info(
-            f"LLM response received: {len(response_text)} chars, "
-            f"{latency_ms}ms"
+            f"LLM response received from {provider}/{model}: "
+            f"{len(response_text)} chars, {latency_ms}ms"
         )
 
-        # Return a normalized response regardless of which provider was used
+        # Normalized response — model_provider/model_name reflect the
+        # provider that actually answered, so traces stay accurate
+        # even after a fallback hop.
         return LLMResponse(
             text=response_text,
             model_provider=provider,
@@ -136,14 +176,9 @@ class LLMRouter:
     # ----------------------------------------------------------
     # Streaming variant
     #
-    # Mirrors route() but yields StreamEvent objects from the
-    # provider's stream_generate(). The orchestrator buffers the
-    # text events for tracing and forwards each token to the
-    # client via Server-Sent Events.
-    #
-    # We keep the same provider-selection logic so a tenant's
-    # configured provider applies identically to streaming and
-    # non-streaming calls.
+    # Mirrors route() but yields StreamEvent objects. Fallback is
+    # only attempted when the primary stream fails BEFORE its first
+    # token (see module docstring for the policy rationale).
     # ----------------------------------------------------------
     def stream_route(self, request: LLMRequest) -> Iterator[StreamEvent]:
         provider = settings.llm_default_provider.lower()
@@ -155,15 +190,37 @@ class LLMRouter:
             f"prompt_length={len(request.prompt)} chars"
         )
 
+        emitted = False
+        try:
+            for event in self._stream_call(provider, model, request):
+                emitted = True
+                yield event
+            return
+        except UpstreamError as primary_err:
+            fallback = _resolve_fallback()
+            if emitted or fallback is None:
+                # Tokens already reached the client (can't switch
+                # providers transparently) or no fallback available.
+                raise
+            fb_provider, fb_model = fallback
+            logger.warning(
+                f"Primary provider '{provider}' failed before first token "
+                f"({primary_err.message}). Failing over to {fb_provider}/{fb_model}."
+            )
+
+        yield from self._stream_call(fb_provider, fb_model, request)
+
+    def _stream_call(
+        self, provider: str, model: str, request: LLMRequest
+    ) -> Iterator[StreamEvent]:
+        """Dispatch one streaming call to a specific provider."""
         if provider == "openai":
             yield from self._get_openai_client().stream_generate(
-                prompt=request.prompt,
-                model=model,
+                prompt=request.prompt, model=model
             )
         elif provider == "gemini":
             yield from self._get_gemini_client().stream_generate(
-                prompt=request.prompt,
-                model=model,
+                prompt=request.prompt, model=model
             )
         else:
             raise UpstreamError(
@@ -173,7 +230,6 @@ class LLMRouter:
 
     # ----------------------------------------------------------
     # Lazy client getters
-    # Only create the client when it's actually needed.
     # ----------------------------------------------------------
 
     def _get_openai_client(self) -> OpenAIClient:

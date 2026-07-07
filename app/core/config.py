@@ -70,6 +70,34 @@ class Settings(BaseSettings):
     llm_default_model: str = "gpt-4o-mini"
 
     # ----------------------------------------------------------
+    # LLM fallback (resilience)
+    # When the default provider fails with an upstream error
+    # (rate limit, 5xx, auth, connection), the router retries the
+    # call once with the fallback provider. Validation errors
+    # (e.g. prompt injection) never trigger fallback.
+    # ----------------------------------------------------------
+
+    llm_fallback_enabled: bool = True
+
+    # Provider to fail over to. Empty = the opposite of
+    # llm_default_provider ("openai" ↔ "gemini").
+    llm_fallback_provider: str = ""
+
+    # Model used on the fallback provider. Empty = a safe default
+    # per provider (gpt-4o-mini / gemini-2.5-flash).
+    llm_fallback_model: str = ""
+
+    # ----------------------------------------------------------
+    # Gemini thinking budget
+    # Gemini 2.5 models spend "thinking" tokens by default, billed
+    # as output tokens. 0 disables thinking (cheapest); -1 lets the
+    # model decide (dynamic). This setting exists because unbounded
+    # thinking drained the prepaid credits in under a month.
+    # ----------------------------------------------------------
+
+    gemini_thinking_budget: int = 0
+
+    # ----------------------------------------------------------
     # Embedding model settings
     # ----------------------------------------------------------
 

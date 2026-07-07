@@ -150,6 +150,7 @@ class TestLLMRouter:
         """Router should raise UpstreamError for unknown provider names."""
         mock_settings.llm_default_provider = "unknown-provider"
         mock_settings.llm_default_model = "some-model"
+        mock_settings.llm_fallback_enabled = False
 
         from app.domain.llm.router import LLMRouter
         from app.core.errors import UpstreamError
@@ -157,3 +158,166 @@ class TestLLMRouter:
 
         with pytest.raises(UpstreamError):
             router.route(LLMRequest(prompt="Test", use_case="default_rag"))
+
+
+# ============================================================
+# Fallback tests
+# ============================================================
+
+class TestLLMRouterFallback:
+    """Tests for the single-hop provider fallback."""
+
+    def _configure(self, mock_settings, *, enabled=True, primary="gemini"):
+        mock_settings.llm_default_provider = primary
+        mock_settings.llm_default_model = (
+            "gemini-2.5-flash" if primary == "gemini" else "gpt-4o-mini"
+        )
+        mock_settings.llm_fallback_enabled = enabled
+        mock_settings.llm_fallback_provider = ""
+        mock_settings.llm_fallback_model = ""
+
+    @patch("app.domain.llm.router.settings")
+    def test_falls_back_to_openai_when_gemini_fails(self, mock_settings):
+        """A Gemini UpstreamError should retry once on OpenAI."""
+        from app.core.errors import UpstreamError
+        from app.domain.llm.router import LLMRouter
+
+        self._configure(mock_settings, primary="gemini")
+
+        mock_gemini = MagicMock()
+        mock_gemini.generate.side_effect = UpstreamError("Gemini 503 overloaded")
+        mock_openai = MagicMock()
+        mock_openai.generate.return_value = ("Fallback answer.", 200, 100, 40)
+
+        router = LLMRouter()
+        router._gemini_client = mock_gemini
+        router._openai_client = mock_openai
+
+        response = router.route(LLMRequest(prompt="Test", use_case="chatbot"))
+
+        mock_gemini.generate.assert_called_once()
+        mock_openai.generate.assert_called_once()
+        # Traces must record the provider that actually answered.
+        assert response.model_provider == "openai"
+        assert response.model_name == "gpt-4o-mini"
+        assert response.text == "Fallback answer."
+
+    @patch("app.domain.llm.router.settings")
+    def test_no_fallback_when_disabled(self, mock_settings):
+        """With fallback disabled, the primary error propagates."""
+        from app.core.errors import UpstreamError
+        from app.domain.llm.router import LLMRouter
+
+        self._configure(mock_settings, enabled=False, primary="gemini")
+
+        mock_gemini = MagicMock()
+        mock_gemini.generate.side_effect = UpstreamError("Gemini down")
+        mock_openai = MagicMock()
+
+        router = LLMRouter()
+        router._gemini_client = mock_gemini
+        router._openai_client = mock_openai
+
+        with pytest.raises(UpstreamError):
+            router.route(LLMRequest(prompt="Test", use_case="chatbot"))
+        mock_openai.generate.assert_not_called()
+
+    @patch("app.domain.llm.router.settings")
+    def test_both_providers_failing_raises_combined_error(self, mock_settings):
+        """When primary and fallback both fail, the error names both."""
+        from app.core.errors import UpstreamError
+        from app.domain.llm.router import LLMRouter
+
+        self._configure(mock_settings, primary="gemini")
+
+        mock_gemini = MagicMock()
+        mock_gemini.generate.side_effect = UpstreamError("Gemini down")
+        mock_openai = MagicMock()
+        mock_openai.generate.side_effect = UpstreamError("OpenAI down")
+
+        router = LLMRouter()
+        router._gemini_client = mock_gemini
+        router._openai_client = mock_openai
+
+        with pytest.raises(UpstreamError) as exc_info:
+            router.route(LLMRequest(prompt="Test", use_case="chatbot"))
+        assert "gemini" in exc_info.value.message.lower()
+        assert "openai" in exc_info.value.message.lower()
+
+    @patch("app.domain.llm.router.settings")
+    def test_validation_errors_do_not_trigger_fallback(self, mock_settings):
+        """Non-upstream errors (e.g. injection 422) propagate untouched."""
+        from app.core.errors import ValidationError as AppValidationError
+        from app.domain.llm.router import LLMRouter
+
+        self._configure(mock_settings, primary="gemini")
+
+        mock_gemini = MagicMock()
+        mock_gemini.generate.side_effect = AppValidationError("Injection detected")
+        mock_openai = MagicMock()
+
+        router = LLMRouter()
+        router._gemini_client = mock_gemini
+        router._openai_client = mock_openai
+
+        with pytest.raises(AppValidationError):
+            router.route(LLMRequest(prompt="Test", use_case="chatbot"))
+        mock_openai.generate.assert_not_called()
+
+    @patch("app.domain.llm.router.settings")
+    def test_stream_fallback_before_first_token(self, mock_settings):
+        """A stream that errors before emitting falls over to the other provider."""
+        from app.core.errors import UpstreamError
+        from app.domain.llm.router import LLMRouter
+        from app.domain.llm.models import StreamEvent
+
+        self._configure(mock_settings, primary="gemini")
+
+        def failing_stream(**_kwargs):
+            raise UpstreamError("Gemini stream failed")
+            yield  # pragma: no cover — makes this a generator
+
+        def ok_stream(**_kwargs):
+            yield StreamEvent(type="token", text="Hola")
+            yield StreamEvent(type="done", text="", model_provider="openai", model_name="gpt-4o-mini")
+
+        mock_gemini = MagicMock()
+        mock_gemini.stream_generate.side_effect = failing_stream
+        mock_openai = MagicMock()
+        mock_openai.stream_generate.side_effect = ok_stream
+
+        router = LLMRouter()
+        router._gemini_client = mock_gemini
+        router._openai_client = mock_openai
+
+        events = list(router.stream_route(LLMRequest(prompt="Test", use_case="chatbot")))
+        assert [e.type for e in events] == ["token", "done"]
+        assert events[0].text == "Hola"
+
+    @patch("app.domain.llm.router.settings")
+    def test_stream_no_fallback_after_first_token(self, mock_settings):
+        """Mid-stream errors propagate — no silent provider switch."""
+        from app.core.errors import UpstreamError
+        from app.domain.llm.router import LLMRouter
+        from app.domain.llm.models import StreamEvent
+
+        self._configure(mock_settings, primary="gemini")
+
+        def midstream_failure(**_kwargs):
+            yield StreamEvent(type="token", text="parcial")
+            raise UpstreamError("Gemini died mid-stream")
+
+        mock_gemini = MagicMock()
+        mock_gemini.stream_generate.side_effect = midstream_failure
+        mock_openai = MagicMock()
+
+        router = LLMRouter()
+        router._gemini_client = mock_gemini
+        router._openai_client = mock_openai
+
+        collected = []
+        with pytest.raises(UpstreamError):
+            for event in router.stream_route(LLMRequest(prompt="Test", use_case="chatbot")):
+                collected.append(event)
+        assert len(collected) == 1
+        mock_openai.stream_generate.assert_not_called()
