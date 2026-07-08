@@ -50,7 +50,7 @@ EVAL_USER = "ragas-eval"
 # Frases que cuentan como "declinó responder" en los casos idk.
 _IDK_PATTERNS = re.compile(
     r"no (dispongo|cuento|tengo|encuentro|hay) .{0,40}(informaci[oó]n|datos|documentos)"
-    r"|no se encuentra .{0,30}(informaci[oó]n|en la base|en los documentos)"
+    r"|no (he encontrado|encontr[eé]|se encuentra) .{0,40}(informaci[oó]n|datos|en la base|en los documentos|documentos)"
     r"|no est[aá] (disponible|cubiert|inclui)"
     r"|fuera de (mi |la )?(base de conocimiento|alcance)"
     r"|no forma parte de (la|mi) base",
