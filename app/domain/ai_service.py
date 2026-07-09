@@ -496,6 +496,10 @@ class AIService:
             country=request.country,
             industry=request.industry,
             framework_filter=request.framework_filter,
+            # Honor RETRIEVAL_USE_HYBRID: without this the service defaulted
+            # to pure vector search, so keyword-strong queries (e.g. a law by
+            # number like "Ley 8968") failed to surface the right chunk.
+            use_hybrid=settings.retrieval_use_hybrid,
         )
         logger.debug(f"Retrieved {len(retrieved_chunks)} context chunks")
 
