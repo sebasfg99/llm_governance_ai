@@ -66,7 +66,10 @@ class AIQueryRequest(BaseModel):
     query: str = Field(
         ...,
         min_length=1,
-        max_length=4000,
+        # Generous cap: some use cases send whole documents as the query
+        # (policy_validation sends the full policy, deliverable_review the
+        # full deliverable). 4000 chars rejected those with string_too_long.
+        max_length=48000,
         description="The user's question or instruction",
         example="¿Qué dice ISO 42001 sobre el comité de gobernanza?",
     )
