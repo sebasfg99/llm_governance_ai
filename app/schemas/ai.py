@@ -47,6 +47,9 @@ UseCaseLiteral = Literal[
     "field_draft",
     "step_guide",
     "deliverable_review",
+    # Validación de la política institucional generada (SetupStep3):
+    # recibe la política completa y devuelve un JSON de conformidad.
+    "policy_validation",
 ]
 
 

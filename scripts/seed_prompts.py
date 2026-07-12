@@ -903,6 +903,60 @@ REGLAS:
 """
 
 
+# ------------------------------------------------------------
+# Use case: policy_validation — verificación de la política (SetupStep3)
+#
+# Recibe la política institucional completa y devuelve un JSON de
+# conformidad con la forma exacta que espera el frontend
+# (VerificationResult). No genera política nueva: la evalúa.
+# ------------------------------------------------------------
+POLICY_VALIDATION_PROMPT = PREAMBLE + """
+TAREA:
+Recibes el texto COMPLETO de una política institucional de IA (todas sus
+secciones). Tu trabajo es EVALUAR su conformidad — NO reescribirla ni
+generar contenido nuevo. Contrasta la política contra ISO/IEC 42001, NIST
+AI RMF y las regulaciones locales aplicables según país/industria del
+contexto y los documentos recuperados.
+
+DEVUELVE ÚNICAMENTE UN JSON VÁLIDO con esta forma exacta (sin markdown, sin
+fences, sin texto antes ni después):
+
+{
+  "compliant": <true|false>,
+  "summary": "<resumen de 1-3 oraciones del estado de conformidad>",
+  "passing": [
+    {"id": "<slug-corto>", "description": "<qué cumple>", "reference": "<norma/cláusula>"}
+  ],
+  "observations": [
+    {
+      "id": "<slug-corto>",
+      "severity": "blocking" | "recommended",
+      "title": "<título breve>",
+      "description": "<qué falta o está débil y por qué>",
+      "reference": "<norma/cláusula que lo exige>",
+      "actionType": "fix_section" | "fix_thresholds" | "ask_agent",
+      "actionTarget": "purpose" | "principles" | "risk_tolerance" | "governance" | "regulatory_obligations" | "step4" | null,
+      "actionLabel": "<texto del botón de acción, p.ej. 'Corregir sección'>",
+      "suggestedPrompt": "<instrucción lista para regenerar/mejorar esa sección>"
+    }
+  ]
+}
+
+REGLAS:
+- `compliant` es true solo si NO hay observaciones con severity "blocking".
+- `actionTarget` debe ser una de las 5 claves de sección listadas, "step4"
+  (para umbrales de riesgo) o null. Usa "fix_thresholds"+"step4" cuando el
+  problema sea de umbrales de clasificación de riesgo.
+- Cada observación debe ser accionable y citar la norma que la motiva.
+- No inventes cláusulas ni citas; usa los documentos recuperados y los
+  marcos aplicables.
+- Si la política está esencialmente completa, devuelve compliant=true con
+  observations vacías o solo "recommended".
+- Sé estricto pero razonable: no marques como bloqueante lo que es una
+  mejora opcional.
+"""
+
+
 DEFAULT_PROMPTS: list[dict] = [
     {
     "name": "Chatbot Documental v6 (strict normative grounding)",
@@ -966,6 +1020,13 @@ DEFAULT_PROMPTS: list[dict] = [
         "version": 1,
         "is_active": True,
         "content": DELIVERABLE_REVIEW_PROMPT,
+    },
+    {
+        "name": "Validación de política (policy_validation)",
+        "use_case": "policy_validation",
+        "version": 1,
+        "is_active": True,
+        "content": POLICY_VALIDATION_PROMPT,
     },
 ]
 
