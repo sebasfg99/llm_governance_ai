@@ -13,6 +13,7 @@
 - [¿Qué es RAG? Explicación simple](#qué-es-rag-explicación-simple)
 - [Stack tecnológico](#stack-tecnológico)
 - [Arquitectura general](#arquitectura-general)
+- [Guías de setup del RAG](#guías-de-setup-del-rag)
 - [Quickstart paso a paso](#quickstart-paso-a-paso)
 - [Cómo correr con Docker](#cómo-correr-con-docker)
 - [Ejemplo de uso del API](#ejemplo-de-uso-del-api)
@@ -168,6 +169,17 @@ flowchart TB
     AISVC --> PR
     TRACE --> TR
 ```
+
+---
+
+## Guías de setup del RAG
+
+Guías detalladas paso a paso (para dev nuevo) para poner el RAG a correr desde cero:
+
+| Guía | Cuándo usarla |
+|---|---|
+| [`docs/SETUP_RAG_SIDECAR.md`](docs/SETUP_RAG_SIDECAR.md) | Correr **solo el motor RAG** aislado: Docker + Postgres/pgvector local, migraciones, seeds, y probar con `curl`. Sin UI ni ngrok. |
+| [`docs/SETUP_RAG_FULL_STACK.md`](docs/SETUP_RAG_FULL_STACK.md) | Probar el RAG **desde la UI de GovAI**: frontend + sidecar local + Supabase Cloud + ngrok/Railway. |
 
 ---
 
@@ -441,6 +453,8 @@ Detalle completo carpeta por carpeta en
 
 | Archivo | Contenido |
 |---|---|
+| [`docs/SETUP_RAG_SIDECAR.md`](docs/SETUP_RAG_SIDECAR.md) | Setup paso a paso del RAG aislado (Docker, migraciones, seeds, prueba con curl) |
+| [`docs/SETUP_RAG_FULL_STACK.md`](docs/SETUP_RAG_FULL_STACK.md) | Setup del stack completo: UI + sidecar + Supabase Cloud + ngrok/Railway |
 | [`docs/api/`](docs/api/) | Documentación por endpoint (request/response, ejemplos curl/Python/JS, errores) |
 | [`docs/api/integration_guide.md`](docs/api/integration_guide.md) | Guía paso a paso para integrar `ai-core` desde otro backend, frontend o chatbot |
 | [`docs/rag/full_pipeline.md`](docs/rag/full_pipeline.md) | Pipeline RAG en profundidad: ingesta → chunking → embeddings → retrieval → generación |

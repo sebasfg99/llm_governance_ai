@@ -10,10 +10,10 @@
 uploads/*
 !uploads/.gitkeep
 
-# --- Admin seed documents (private, not for version control) ---
-docs/admin/*.pdf
-docs/admin/*.docx
-docs/admin/*.txt
+# --- Admin seed documents ---
+# The regulatory corpus (docs/admin/**) is now versioned in this private
+# repo so seed_documents.py works right after clone. If this repo ever
+# becomes public, revisit licensing before keeping these tracked.
 
 # --- Python cache files ---
 __pycache__/
