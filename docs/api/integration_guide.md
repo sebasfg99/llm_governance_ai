@@ -1,37 +1,139 @@
 # Guía de Integración con `ai-core`
 
-Esta guía explica **cómo conectar otra aplicación al API**. Cubre tres
-escenarios típicos:
+Esta guía explica **cómo conectar otra aplicación al API**.
 
-1. [Integración desde un backend](#1-integración-desde-un-backend)
-2. [Integración desde un frontend SPA](#2-integración-desde-un-frontend-spa)
-3. [Integración desde un chatbot](#3-integración-desde-un-chatbot)
+> **TL;DR — solo te importa el orquestador.** Para integrar el RAG, tu app
+> llama a **un solo endpoint: `POST /ai/query`**. Ese endpoint es la fachada
+> HTTP del **orquestador `AIService`**, que por dentro corre todo el pipeline
+> (memoria → recuperación → guardrails → LLM → trazas → evaluación). **No
+> necesitás** llamar a embeddings, búsqueda de chunks, prompts ni al LLM por
+> separado. Ver [El orquestador](#el-orquestador-tu-único-punto-de-integración).
 
-Más una sección final con [patrones avanzados](#4-patrones-avanzados): manejo
-de threads, streaming-like UX, retries, cacheo.
+Contenido:
+
+- [El orquestador — tu único punto de integración](#el-orquestador-tu-único-punto-de-integración)
+- [Qué endpoint usar según tu caso](#qué-endpoint-usar-según-tu-caso)
+- [Autenticación](#autenticación)
+- [1. Integración desde un backend](#1-integración-desde-un-backend)
+- [2. Integración desde un frontend SPA](#2-integración-desde-un-frontend-spa)
+- [3. Integración desde un chatbot](#3-integración-desde-un-chatbot)
+- [4. Patrones avanzados](#4-patrones-avanzados)
 
 ---
 
-## Modelo mental rápido
+## El orquestador — tu único punto de integración
+
+Todo el RAG está detrás de **un orquestador central**: la clase `AIService`
+(`app/domain/ai_service.py`), expuesta por HTTP como **`POST /ai/query`**.
 
 ```mermaid
 flowchart LR
-    YourApp[Tu aplicación] -->|HTTP + Bearer| AICORE[ai-core API]
-    AICORE -->|RAG + LLM| LLM[OpenAI/Gemini]
-    AICORE -->|persiste| DB[(Supabase)]
-    DB -->|chunks + traces + threads| AICORE
+    YourApp[Tu aplicación] -->|POST /ai/query| ORCH[AIService<br/>orquestador]
+
+    subgraph AICORE["ai-core (oculto para ti)"]
+        ORCH --> MEM[Memoria L1/L2/L3<br/>threads · projects · traces]
+        ORCH --> RAG[Recuperación RAG<br/>embeddings + búsqueda híbrida]
+        ORCH --> GUARD[Guardrails]
+        ORCH --> LLM[LLM Router<br/>Gemini/OpenAI]
+        ORCH --> TRACE[Trazas + evaluación]
+    end
+
+    LLM -->|OpenAI/Gemini| EXT[(Proveedores LLM)]
+    RAG --> DB[(Supabase + pgvector)]
+    ORCH -->|respuesta + trace_id| YourApp
 ```
 
-Reglas básicas:
+**Qué hace el orquestador por vos (en una sola llamada):**
 
-- `ai-core` **no** se llama desde el navegador del usuario final directamente
-  en producción: lo natural es que tu **backend** lo llame y tu frontend hable
-  con **tu** backend. Esto te permite añadir tu propia capa de auth,
-  rate-limit y tracking.
-- En desarrollo, el CORS está abierto (`allow_origins=["*"]`). En producción,
-  cambiarlo a tu dominio.
-- Cada request debe llevar `Authorization: Bearer <token>`. Hoy cualquier
-  valor es aceptado (auth stubbed); mañana será un JWT de Supabase.
+1. Resuelve o crea el thread de conversación (memoria L1).
+2. Carga el expediente del proyecto si mandás `project_id` (memoria L2).
+3. Carga el system prompt del `use_case`.
+4. Recupera los chunks relevantes (RAG, con filtros por país/framework).
+5. Detecta preguntas de justificación ("¿por qué…?") y carga trazas previas (L3).
+6. Aplica guardrails (anti prompt-injection).
+7. Ensambla el prompt final (system + memoria + contexto + pregunta).
+8. Llama al LLM (bloqueante o streaming).
+9. Persiste la traza + los mensajes del thread.
+10. Corre la evaluación automática.
+11. Te devuelve la respuesta + `thread_id` + `trace_id`.
+
+**Lo que NO tenés que hacer (el orquestador ya lo maneja):**
+
+- ❌ Generar embeddings.
+- ❌ Consultar `document_chunks` ni las funciones `match_chunks*`.
+- ❌ Elegir/ensamblar prompts desde la tabla `prompts`.
+- ❌ Llamar a OpenAI/Gemini directamente.
+- ❌ Escribir trazas o evaluaciones a mano.
+
+> No existe un endpoint público para "solo recuperar chunks" o "solo llamar al
+> LLM": el diseño es deliberadamente **una única puerta de entrada** para que
+> la calidad (grounding, guardrails, auditoría) sea consistente para todos los
+> integradores.
+
+---
+
+## Qué endpoint usar según tu caso
+
+En el 90% de las integraciones **solo usás `POST /ai/query`**. Los demás
+endpoints son para ingesta de documentos (pipeline offline) o para los flujos
+estructurados de gobernanza (que a su vez usan el mismo orquestador por dentro).
+
+| Tu objetivo | Endpoint | Notas |
+|---|---|---|
+| **Q&A / chatbot con RAG** | **`POST /ai/query`** | El caso principal. `use_case: "chatbot"`. |
+| **Resumen ejecutivo** | `POST /ai/query` | `use_case: "executive_summary"`. |
+| **Ingerir documentos a la base** | `POST /documents/upload` + `POST /documents/{id}/process` | Pipeline **offline**, separado del query. Normalmente lo hace un admin, no cada integrador. |
+| **Análisis de riesgo (workflow)** | `POST /risk/{project_id}/analyze` | Orquestador de alto nivel sobre `AIService`; valida y persiste al expediente. |
+| **Política + controles (workflow)** | `POST /policies/{project_id}/generate` · `POST /policies/{project_id}/controls` | Igual: workflow estructurado sobre el orquestador. |
+| **Recuperar historial de un chat** | `GET /threads/{id}/messages` | Para rehidratar la UI. |
+| **Feedback / auditoría** | `POST /feedback` · `GET /evals/{trace_id}` | Usan el `trace_id` que devuelve `/ai/query`. |
+
+> Regla práctica: **si tu integración es "hacer preguntas con RAG", empezá y
+> terminá en `POST /ai/query`.**
+
+---
+
+## Autenticación
+
+Cada request lleva un header `Authorization: Bearer <token>`. Hay **dos caminos**
+soportados por el orquestador (ver `app/api/deps.py`):
+
+### Path A — Service key + headers de confianza (recomendado para integradores)
+
+Tu backend (o un Edge Function) valida al usuario final y luego llama a
+`ai-core` con la **service key** y los headers de tenant/usuario:
+
+```
+Authorization: Bearer <AI_CORE_SERVICE_KEY>
+X-Tenant-Id:   <id de la institución / tenant>
+X-User-Id:     <id del usuario final>
+```
+
+`ai-core` confía en los headers `X-*` **solo si** la service key coincide. Este
+es el patrón que usa la propia app GovAI (sus Supabase Edge Functions actúan de
+proxy). Es la forma recomendada porque mantiene la `service_key` fuera del
+navegador y te deja poner tu propia capa de auth/rate-limit.
+
+### Path B — JWT de Supabase directo
+
+Un caller de confianza (scripts de ops, backend propio) manda un JWT de
+Supabase; el `tenant_id` se lee de `app_metadata.tenant_id`.
+
+```
+Authorization: Bearer <supabase-jwt>
+```
+
+> **Estado del MVP:** en desarrollo la verificación puede estar *stubbed*
+> (cualquier `Bearer` devuelve la identidad `dev-tenant`/`dev-user`). En
+> producción usá **Path A** con una `AI_CORE_SERVICE_KEY` real y rotada.
+
+**Otras reglas básicas:**
+
+- `ai-core` **no** se llama desde el navegador del usuario final en producción:
+  lo natural es que tu **backend** lo llame y tu frontend hable con **tu**
+  backend.
+- En desarrollo el CORS está abierto (`allow_origins=["*"]`). En producción,
+  restringilo a tu dominio.
 
 ---
 
@@ -39,12 +141,13 @@ Reglas básicas:
 
 ### Stack típico
 
-Tu backend (Node.js, Django, Rails, etc.) llama a `ai-core` por HTTP cuando
-necesite:
+Tu backend (Node.js, Django, Rails, etc.) llama al **orquestador** (`POST
+/ai/query`) por HTTP cuando necesite una respuesta con RAG. Para casos que no
+son Q&A, ver la tabla [Qué endpoint usar según tu caso](#qué-endpoint-usar-según-tu-caso):
 
-- Generar una respuesta de chatbot.
-- Subir y procesar un documento.
-- Disparar un análisis de riesgo.
+- Generar una respuesta de chatbot → `POST /ai/query`.
+- Subir y procesar un documento → `/documents/*` (pipeline offline).
+- Disparar un análisis de riesgo → `POST /risk/{project_id}/analyze`.
 
 ### Ejemplo en Node.js (Express + axios)
 
@@ -300,14 +403,26 @@ def ai_query_with_retry(payload, attempts=3):
             raise
 ```
 
-### B. Streaming-like UX (sin streaming real)
+### B. Streaming (SSE)
 
-`ai-core` no expone streaming SSE en el MVP. Para UX percibida, usa
-**optimistic updates**:
+El orquestador **sí expone streaming**: mandá `"stream": true` en el body de
+`POST /ai/query` y la respuesta llega como Server-Sent Events (`text/event-stream`),
+token a token, cerrando con un evento `done` que trae `trace_id` y metadatos.
 
-1. Inserta el mensaje del usuario inmediatamente.
-2. Muestra un placeholder "El asistente está pensando…" con typing dots.
-3. Cuando llega la respuesta, reemplaza el placeholder.
+```bash
+curl -N -X POST "$AICORE_URL/ai/query" \
+  -H "Authorization: Bearer $AICORE_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"¿Qué exige ISO 42001 sobre riesgos?","use_case":"chatbot","stream":true}'
+```
+
+> `stream: true` es **incompatible con `response_mode: "structured"`** (devuelve
+> 422). Detalle de los eventos SSE y ejemplo en JavaScript en
+> [`ai.md`](ai.md#streaming-sse).
+
+Si preferís no manejar SSE, dejá `stream: false` (default) y para la UX usá
+**optimistic updates**: insertá el mensaje del usuario, mostrá un placeholder
+"El asistente está pensando…" y reemplazalo cuando llega la respuesta.
 
 ### C. Cacheo del lado de tu backend
 

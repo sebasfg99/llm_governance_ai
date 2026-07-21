@@ -4,13 +4,19 @@ Esta carpeta documenta todos los endpoints HTTP expuestos por la aplicación.
 Para una vista interactiva, levanta el servidor y abre **`http://localhost:8000/docs`**
 (Swagger UI generado automáticamente por FastAPI).
 
+> **¿Vas a integrar el RAG?** Solo te importa **un endpoint: `POST /ai/query`**,
+> la fachada del **orquestador `AIService`** que corre todo el pipeline
+> (memoria → recuperación → guardrails → LLM → trazas → evaluación). No llames a
+> embeddings, chunks ni al LLM por separado. Empezá por
+> [`integration_guide.md` → El orquestador](integration_guide.md#el-orquestador-tu-único-punto-de-integración).
+
 ---
 
 ## Índice de endpoints
 
 | Recurso | Archivo | Endpoints |
 |---|---|---|
-| **AI** (consultas RAG) | [`ai.md`](ai.md) | `POST /ai/query` |
+| **AI** (consultas RAG) — **orquestador, punto de entrada principal** | [`ai.md`](ai.md) | `POST /ai/query` |
 | **Documentos** | [`documents.md`](documents.md) | `POST /documents/upload`, `POST /documents/{id}/process`, `GET /documents`, `GET /documents/{id}` |
 | **Proyectos** (expediente) | [`projects.md`](projects.md) | `GET /projects`, `POST /projects`, `GET /projects/{id}`, `PATCH /projects/{id}` |
 | **Threads** (conversaciones) | [`threads.md`](threads.md) | `GET /threads`, `POST /threads`, `GET /threads/{id}`, `GET /threads/{id}/messages` |

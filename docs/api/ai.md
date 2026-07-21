@@ -1,9 +1,15 @@
-# `POST /ai/query` — Consulta RAG central
+# `POST /ai/query` — Consulta RAG central (orquestador)
 
-El endpoint principal del sistema. Recibe una pregunta del usuario, ejecuta el
-pipeline RAG completo (guardrails → recuperación → ensamblaje de prompt →
-LLM → trazas → evaluación) y devuelve la respuesta junto con metadatos de
-auditoría.
+El endpoint principal del sistema y **la fachada HTTP del orquestador
+`AIService`** (`app/domain/ai_service.py`). Recibe una pregunta del usuario,
+ejecuta el pipeline RAG completo (memoria → guardrails → recuperación →
+ensamblaje de prompt → LLM → trazas → evaluación) y devuelve la respuesta junto
+con metadatos de auditoría.
+
+> **Para integradores:** este es —en la práctica— el único endpoint que
+> necesitás para el RAG. No hay que llamar a embeddings, búsqueda de chunks,
+> prompts ni al LLM por separado: el orquestador lo hace todo en esta única
+> llamada. Ver [`integration_guide.md` → El orquestador](integration_guide.md#el-orquestador-tu-único-punto-de-integración).
 
 ---
 
