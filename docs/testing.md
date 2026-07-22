@@ -90,13 +90,21 @@ Tras una migración o cambio grande, ejecutar a mano:
 uvicorn app.main:app --reload &
 sleep 2 && curl http://localhost:8000/health
 
+# Autenticación local Path A
+KEY=$(grep '^AI_CORE_SERVICE_KEY=' .env | cut -d= -f2-)
+
 # 2. La biblioteca está sembrada
-curl -H "Authorization: Bearer dev-token" http://localhost:8000/documents | jq '.total'
+curl -H "Authorization: Bearer $KEY" \
+  -H "X-Tenant-Id: dev-tenant" \
+  -H "X-User-Id: dev-user" \
+  http://localhost:8000/documents | jq '.total'
 
 # 3. Una query simple funciona
 curl -X POST http://localhost:8000/ai/query \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer dev-token" \
+  -H "Authorization: Bearer $KEY" \
+  -H "X-Tenant-Id: dev-tenant" \
+  -H "X-User-Id: dev-user" \
   -d '{"query":"¿Qué es ISO 42001?","use_case":"chatbot"}' | jq '.response_text'
 ```
 
@@ -120,7 +128,9 @@ Cada respuesta de `/ai/query` incluye `retrieved_chunks` con un preview de
 
 ```bash
 curl -X POST http://localhost:8000/ai/query \
-  -H "Authorization: Bearer dev-token" \
+  -H "Authorization: Bearer $KEY" \
+  -H "X-Tenant-Id: dev-tenant" \
+  -H "X-User-Id: dev-user" \
   -H "Content-Type: application/json" \
   -d '{"query":"...","use_case":"chatbot"}' \
   | jq '.retrieved_chunks[] | {similarity, doc: .document_id, preview: .content_preview}'

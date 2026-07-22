@@ -242,6 +242,10 @@ Desde el SQL Editor de Supabase, ejecuta en orden:
 3. `app/db/migrations/003_fix_ivfflat_probes.sql` — ajustes de índice
 4. `app/db/migrations/004_projects_memory_framework.sql` — proyectos, threads,
    filtro por framework
+5. `app/db/migrations/005_section_ref_hnsw.sql` — citas por sección + HNSW
+6. `app/db/migrations/006_rag_governance.sql` — retrieval híbrido y métricas
+7. `app/db/migrations/007_fix_hybrid_rpc_types.sql` — corrección de tipos RPC
+8. `app/db/migrations/008_industry_codes.sql` — filtros por industria
 
 > Si tu proyecto Supabase muestra el aviso *“New tables will not have Row Level
 > Security enabled”*, en desarrollo puedes hacer click en **Run anyway**. Para
@@ -273,9 +277,12 @@ uvicorn app.main:app --reload
 ### 7. Probar el endpoint principal
 
 ```bash
+KEY=$(grep '^AI_CORE_SERVICE_KEY=' .env | cut -d= -f2-)
 curl -X POST http://localhost:8000/ai/query \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer dev-token" \
+  -H "Authorization: Bearer $KEY" \
+  -H "X-Tenant-Id: dev-tenant" \
+  -H "X-User-Id: dev-user" \
   -d '{
     "query": "¿Qué requiere ISO 42001 sobre el comité de gobernanza de IA?",
     "use_case": "chatbot",
@@ -283,8 +290,8 @@ curl -X POST http://localhost:8000/ai/query \
   }'
 ```
 
-> El sistema acepta cualquier token en desarrollo (auth está stubbed). Ver
-> [`docs/decisions/design_choices.md`](docs/decisions/design_choices.md).
+> `Bearer dev-token` ya no funciona. La alternativa es enviar un JWT válido de
+> Supabase. Ver [`docs/api/integration_guide.md`](docs/api/integration_guide.md#autenticación).
 
 ---
 
@@ -296,8 +303,10 @@ curl -X POST http://localhost:8000/ai/query \
 docker compose up -d postgres
 ```
 
-Esto levanta `pgvector/pgvector:pg16` en `localhost:5432`. Útil si prefieres
-trabajar contra una DB local en lugar de Supabase Cloud.
+Esto levanta `pgvector/pgvector:pg16` en `localhost:5432` para inspeccionar el
+esquema y ejecutar SQL. El sidecar usa el cliente REST/RPC de Supabase, así que
+para un pipeline local end-to-end necesitás `supabase start`, no solo este
+contenedor.
 
 ### Opción B — App completa en contenedor
 
@@ -326,7 +335,9 @@ Detalles completos en [`docs/docker_deployment.md`](docs/docker_deployment.md).
 
 ```bash
 curl -X POST http://localhost:8000/documents/upload \
-  -H "Authorization: Bearer dev-token" \
+  -H "Authorization: Bearer $KEY" \
+  -H "X-Tenant-Id: dev-tenant" \
+  -H "X-User-Id: dev-user" \
   -F "file=@./mi_politica.pdf" \
   -F "country=costa-rica"
 ```
@@ -346,17 +357,27 @@ Respuesta:
 
 ```bash
 curl -X POST http://localhost:8000/documents/8f2c.../process \
-  -H "Authorization: Bearer dev-token"
+  -H "Authorization: Bearer $KEY" \
+  -H "X-Tenant-Id: dev-tenant" \
+  -H "X-User-Id: dev-user"
 ```
 
 ### Hacer una consulta RAG
 
 ```python
+import os
 import requests
+from dotenv import load_dotenv
+
+load_dotenv()
 
 resp = requests.post(
     "http://localhost:8000/ai/query",
-    headers={"Authorization": "Bearer dev-token"},
+    headers={
+        "Authorization": f"Bearer {os.environ['AI_CORE_SERVICE_KEY']}",
+        "X-Tenant-Id": "dev-tenant",
+        "X-User-Id": "dev-user",
+    },
     json={
         "query": "¿Qué controles ISO 42001 aplican a un sistema generativo público?",
         "use_case": "chatbot",

@@ -123,9 +123,9 @@ Supabase; el `tenant_id` se lee de `app_metadata.tenant_id`.
 Authorization: Bearer <supabase-jwt>
 ```
 
-> **Estado del MVP:** en desarrollo la verificación puede estar *stubbed*
-> (cualquier `Bearer` devuelve la identidad `dev-tenant`/`dev-user`). En
-> producción usá **Path A** con una `AI_CORE_SERVICE_KEY` real y rotada.
+La implementación actual valida ambos caminos. `Bearer dev-token` no funciona:
+para desarrollo local usá **Path A** con el valor real de
+`AI_CORE_SERVICE_KEY` y enviá también `X-Tenant-Id`/`X-User-Id`.
 
 **Otras reglas básicas:**
 
@@ -244,7 +244,8 @@ async def upload(file: UploadFile = File(...), country: str | None = Form(None))
 todo por tu backend para no exponer la `service_key` ni el token.
 
 Para **prototipado / desarrollo local**, puedes llamar directo desde React/Vue
-porque el CORS está abierto.
+porque el CORS está abierto. Usá el JWT del usuario autenticado de Supabase;
+**nunca** expongas `AI_CORE_SERVICE_KEY` en el navegador.
 
 ### Hook de React minimal
 
@@ -253,6 +254,7 @@ porque el CORS está abierto.
 import { useCallback, useState } from "react";
 
 const API = "http://localhost:8000";
+const ACCESS_TOKEN = "<supabase-user-jwt>";
 
 export function useChat() {
   const [threadId, setThreadId] = useState<string | null>(null);
@@ -265,7 +267,10 @@ export function useChat() {
     try {
       const r = await fetch(`${API}/ai/query`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: "Bearer dev-token" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${ACCESS_TOKEN}`,
+        },
         body: JSON.stringify({ query, use_case: "chatbot", thread_id: threadId }),
       }).then((r) => r.json());
 
@@ -288,7 +293,7 @@ useEffect(() => {
   const saved = localStorage.getItem("threadId");
   if (saved) {
     fetch(`${API}/threads/${saved}/messages`, {
-      headers: { Authorization: "Bearer dev-token" },
+      headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
     })
       .then((r) => r.json())
       .then((data) => {

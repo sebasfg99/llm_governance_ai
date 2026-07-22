@@ -230,8 +230,11 @@ data: {"trace_id":"...","thread_id":"...","project_id":null,
 llegar en tiempo real:
 
 ```bash
+KEY=$(grep '^AI_CORE_SERVICE_KEY=' .env | cut -d= -f2-)
 curl -N -X POST http://localhost:8000/ai/query \
-  -H 'Authorization: Bearer dev-token' \
+  -H "Authorization: Bearer $KEY" \
+  -H 'X-Tenant-Id: dev-tenant' \
+  -H 'X-User-Id: dev-user' \
   -H 'Content-Type: application/json' \
   -d '{
     "query": "¿Qué dice ISO 42001 sobre el análisis de riesgos de IA?",

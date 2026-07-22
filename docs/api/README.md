@@ -49,10 +49,16 @@ Todas las rutas (excepto `/health`) requieren un header de autorización:
 Authorization: Bearer <token>
 ```
 
-> **Estado actual del MVP:** la verificación del token está *stubbed* en
-> `app/core/security.py`. Cualquier valor (incluso `Bearer dev-token`) devuelve
-> la identidad de desarrollo `tenant_id="dev-tenant"`, `user_id="dev-user"`.
-> Antes de producción, sustituir por validación real de JWT de Supabase.
+La autenticación admite dos caminos:
+
+1. **Service key (recomendado):** `Authorization: Bearer
+   <AI_CORE_SERVICE_KEY>` junto con `X-Tenant-Id` y `X-User-Id`.
+2. **JWT de Supabase:** un access token válido; el tenant se obtiene de
+   `app_metadata.tenant_id`.
+
+`Bearer dev-token` ya no es válido. Consultá
+[`integration_guide.md`](integration_guide.md#autenticación) para ver ambos
+flujos.
 
 ### Tipos de contenido
 

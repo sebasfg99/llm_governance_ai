@@ -79,12 +79,15 @@ El servidor queda disponible en:
 
 Todos los flujos a continuacion se pueden ejecutar desde Swagger UI en `http://localhost:8000/docs`.
 
-En cada llamada que requiera autenticacion, usar el header:
+En cada llamada que requiera autenticacion, usar los headers:
 ```
-Authorization: Bearer dev-token
+Authorization: Bearer <AI_CORE_SERVICE_KEY real>
+X-Tenant-Id: dev-tenant
+X-User-Id: dev-user
 ```
 
-El valor exacto del token no importa en el ambiente de desarrollo (la autenticacion esta en modo stub).
+`Bearer dev-token` ya no es valido. Como alternativa, puede usarse un JWT real
+de Supabase en `Authorization`, sin los headers `X-*`.
 
 ---
 
