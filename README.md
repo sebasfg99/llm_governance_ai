@@ -476,6 +476,7 @@ Detalle completo carpeta por carpeta en
 |---|---|
 | [`docs/SETUP_RAG_SIDECAR.md`](docs/SETUP_RAG_SIDECAR.md) | Setup paso a paso del RAG aislado (Docker, migraciones, seeds, prueba con curl) |
 | [`docs/SETUP_RAG_FULL_STACK.md`](docs/SETUP_RAG_FULL_STACK.md) | Setup del stack completo: UI + sidecar + Supabase Cloud + ngrok/Railway |
+| [`docs/PROMPT_INTEGRAR_AI_CORE_CUALQUIER_UI.md`](docs/PROMPT_INTEGRAR_AI_CORE_CUALQUIER_UI.md) | Prompt reutilizable para que un agente configure e integre `ai-core` de forma segura con cualquier UI |
 | [`docs/api/`](docs/api/) | Documentación por endpoint (request/response, ejemplos curl/Python/JS, errores) |
 | [`docs/api/integration_guide.md`](docs/api/integration_guide.md) | Guía paso a paso para integrar `ai-core` desde otro backend, frontend o chatbot |
 | [`docs/rag/full_pipeline.md`](docs/rag/full_pipeline.md) | Pipeline RAG en profundidad: ingesta → chunking → embeddings → retrieval → generación |
