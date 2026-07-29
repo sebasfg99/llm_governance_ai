@@ -295,6 +295,8 @@ así que es seguro re-ejecutarlas.
 | `006_rag_governance.sql` | Gobernanza: costo/tokens/riesgo en `traces`, 8 métricas en `evaluations`, tabla `response_risks`, **búsqueda híbrida** (`content_tsv` + RPCs `match_chunks_hybrid` / `match_global_chunks_hybrid`) y la vista `rag_metrics_v`. |
 | `007_fix_hybrid_rpc_types.sql` | Hotfix de tipos (`real` vs `double precision`) en los RPCs híbridos de la 006. |
 | `008_industry_codes.sql` | Columna `industry_codes` para filtrar documentos por sector (Capa 3). |
+| `009_agent_tags.sql` | Columna `agent_tags` (+ índice GIN) para filtrar por agente de negocio, y parámetro `p_agent_tags` en los cuatro RPCs de retrieval. Requerida para usar `agent_tags` en `POST /ai/query` — ver [`rag/agent_tags.md`](rag/agent_tags.md). Después de aplicarla hay que correr `python scripts/seed_documents.py --force` para etiquetar el corpus. |
+| `010_industry_filter_fix.sql` | **Corrige un bug silencioso**: el filtro por `industry_codes` nunca filtró nada. Agrega `p_industry_codes` a los cuatro RPCs, devuelve la columna `industry_codes` en el resultado, y crea el índice GIN que faltaba. Sin esta migración una cooperativa puede recibir contenido exclusivo de bancos, sin error ni log — ver [`rag/industry_codes.md`](rag/industry_codes.md). |
 
 ### Aplicarlas en Supabase local o Postgres de diagnóstico
 

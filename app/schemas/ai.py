@@ -143,6 +143,54 @@ class AIQueryRequest(BaseModel):
         example=["iso_42001", "nist_airmf"],
     )
 
+    # Business-agent filter. Each entry is one of the tags written on
+    # documents/chunks by scripts/seed_documents.py (FRAMEWORK_AGENT_MAP):
+    #   normativa | seguridad | proveedores | privacidad | general
+    # See docs/rag/agent_tags.md for the full vocabulary and the mapping
+    # from framework slug to agent.
+    #
+    # Semantics (mirrors the SQL side added by migration 009_agent_tags.sql):
+    #   None / []  → no agent restriction; retrieval behaves exactly as it
+    #                did before this field existed. This is what every
+    #                non-agent caller (risk, policies) relies on.
+    #   non-empty  → only chunks whose agent_tags array OVERLAPS this list
+    #                are considered (SQL: dc.agent_tags && p_agent_tags).
+    #
+    # For now this is set manually in the request body (proof of concept).
+    # A later step will have the orchestrator populate it from the selected
+    # agent instead of the caller.
+    agent_tags: list[str] | None = Field(
+        default=None,
+        description=(
+            "Optional list of business-agent tags to scope RAG retrieval to "
+            "(normativa, seguridad, proveedores, privacidad, general). "
+            "Omit or send an empty list for the pre-existing unfiltered behaviour."
+        ),
+        example=["normativa"],
+    )
+
+    # Escape hatch for the automatic broadening described in
+    # docs/rag/agent_tags.md: when the agent-scoped pass returns weak results
+    # (top-1 score below settings.agent_fallback_threshold), retrieval is
+    # retried with agent_tags + ["general"].
+    #
+    # Exposed on the request — rather than being hardcoded — because the
+    # design requires the fallback to be switchable per agent: an agent whose
+    # own corpus is dense enough does not want its results diluted with
+    # generic material. Also makes the manual A/B validation possible without
+    # restarting the service with different env vars.
+    #
+    # Ignored entirely when agent_tags is None/empty (there is nothing to
+    # broaden from).
+    enable_general_fallback: bool = Field(
+        default=True,
+        description=(
+            "When true (default) and agent_tags is set, a low-scoring agent-scoped "
+            "retrieval is automatically retried with agent_tags + ['general']. "
+            "Set to false to force strictly agent-scoped retrieval."
+        ),
+    )
+
     # Caller-supplied system prompt that supersedes the use_case's default.
     # Source: GovAI prompt_registry table. When set, the use_case prompt
     # lookup is skipped but the use_case value is still recorded in traces

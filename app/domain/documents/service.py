@@ -300,6 +300,12 @@ class DocumentService:
                     "embedding": embedding,
                     "country": doc.country,
                     "framework": doc.framework,
+                    # Denormalized from the parent document so retrieval can
+                    # filter at chunk level without a JOIN. Fallbacks mirror
+                    # the column defaults for documents created before
+                    # migrations 008/009 were applied.
+                    "industry_codes": doc.industry_codes or ["ALL"],
+                    "agent_tags": doc.agent_tags or [],
                     "created_at": now,
                 }
                 for idx, (chunk, embedding) in enumerate(

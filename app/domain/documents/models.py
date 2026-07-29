@@ -80,6 +80,15 @@ class Document(BaseModel):
                                 # None means the document is global (applies to all countries)
     framework: str | None = None  # Normative framework slug (e.g. "iso_42001").
                                   # None means framework-agnostic.
+    industry_codes: list[str] | None = None  # Industries this document applies to
+                                             # (e.g. ["bank", "cooperative"]); ["ALL"]
+                                             # means industry-agnostic. Set by the
+                                             # seed script from the framework.
+    agent_tags: list[str] | None = None  # Business agents this document applies to
+                                         # (normativa, seguridad, proveedores,
+                                         # privacidad, general). Set by the seed
+                                         # script from the framework
+                                         # (FRAMEWORK_AGENT_MAP).
 
     error_message: str | None = None    # Set if processing failed
     page_count: int | None = None       # Populated after successful processing
@@ -116,6 +125,8 @@ class DocumentChunk(BaseModel):
     chunk_index: int            # Position within the document (0-based)
     country: str | None = None  # Propagated from parent document
     framework: str | None = None  # Propagated from parent document
+    industry_codes: list[str] | None = None  # Propagated from parent document
+    agent_tags: list[str] | None = None  # Propagated from parent document
 
     # The embedding is a list of floats (1536 dimensions)
     # It's None when the chunk is first created and populated

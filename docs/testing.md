@@ -435,7 +435,10 @@ opt-in (no parte del flujo principal).
 
 ### Pre-condiciones
 
-1. Aplicar migración `008_industry_codes.sql` en Supabase (Python sidecar DB).
+1. Aplicar migraciones `008_industry_codes.sql` **y `010_industry_filter_fix.sql`**
+   en Supabase (Python sidecar DB). Sin la 010 el filtro por industria no filtra
+   nada — cualquier escenario de esta checklist pasaría en falso.
+   Ver [`rag/industry_codes.md`](rag/industry_codes.md).
 2. Colocar SUGEF 10-07 y SUGEF 18-16 en `docs/admin/Ciberseguridad/Costa Rica/`.
 3. Re-ejecutar: `PYTHONPATH=. python scripts/seed_documents.py`
 4. Confirmar en DB: `SELECT filename, industry_codes, country FROM document_chunks WHERE filename ILIKE '%SUGEF 10%' LIMIT 5;`

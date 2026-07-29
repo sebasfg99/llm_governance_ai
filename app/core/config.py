@@ -205,6 +205,31 @@ class Settings(BaseSettings):
     retrieval_use_hybrid: bool = False
 
     # ----------------------------------------------------------
+    # Business-agent retrieval (agent_tags) settings
+    # ----------------------------------------------------------
+
+    # Score below which the agent-scoped retrieval is considered "poor
+    # coverage" and is retried with the union of the requested agent tags
+    # plus "general" (see RetrievalService.retrieve and docs/rag/agent_tags.md).
+    #
+    # WHY THIS IS A SEPARATE KNOB FROM similarity_threshold:
+    # retrieve() already discards every chunk scoring below
+    # similarity_threshold, so reusing that same value would make the
+    # condition "top-1 < threshold" exactly equivalent to "pass 1 returned
+    # nothing at all" — a degenerate trigger that only fires in the extreme
+    # case. Keeping a dedicated setting lets an operator raise the bar
+    # (e.g. AGENT_FALLBACK_THRESHOLD=0.60) so the fallback also broadens the
+    # corpus on weak-but-passing results, which is the "parameterizable per
+    # agent" requirement from the design doc.
+    #
+    # Expected input:  float in 0.0 – 1.0, read from AGENT_FALLBACK_THRESHOLD.
+    # Default 0.45:    identical to similarity_threshold, so out of the box
+    #                  the behaviour matches the documented design exactly.
+    # Effect:          only relevant when the caller passes agent_tags; a
+    #                  request without agent_tags never reads this value.
+    agent_fallback_threshold: float = 0.45
+
+    # ----------------------------------------------------------
     # Governance / evaluation settings
     # ----------------------------------------------------------
 

@@ -178,6 +178,7 @@ de cada archivo de `llm_governance_ai/app/db/migrations/`:
 001_initial.sql  →  002_add_country.sql  →  003_fix_ivfflat_probes.sql
 → 004_projects_memory_framework.sql  →  005_section_ref_hnsw.sql
 → 006_rag_governance.sql  →  007_fix_hybrid_rpc_types.sql  →  008_industry_codes.sql
+→ 009_agent_tags.sql  →  010_industry_filter_fix.sql
 ```
 
 Estas crean `documents`, `document_chunks` (pgvector), `prompts`, `traces`, la

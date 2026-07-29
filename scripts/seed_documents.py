@@ -85,8 +85,15 @@ FRAMEWORK_FOLDER_MAP = {
 # Layer-3 sector frameworks: SUGEF and CONASSIF apply to regulated
 # financial institutions (bank + cooperative) only.
 # All other frameworks (ISO, NIST, GDPR…) are Layer 1-2 → industry_codes=['ALL'].
+#
+# NOTE: "corporate_governance" is treated as a sector framework because,
+# as of 2026-07, every document under this topic folder is bank/cooperative-
+# sector regulation (SUGEF, CONASSIF, and equivalent regulators in other
+# countries). If a non-sectoral corporate governance document is ever added
+# under this topic, it will be incorrectly tagged with industry_codes=
+# ["bank", "cooperative"]. Revisit this assumption before adding such content.
 SECTOR_FRAMEWORKS: frozenset[str] = frozenset(
-    {"sugef_10_07", "sugef_18_16", "sugef_24_22", "conassif"}
+    {"sugef_10_07", "sugef_18_16", "sugef_24_22", "conassif", "corporate_governance"}
 )
 
 
@@ -95,6 +102,48 @@ def industry_codes_for_framework(framework: str | None) -> list[str]:
     if framework in SECTOR_FRAMEWORKS:
         return ["bank", "cooperative"]
     return ["ALL"]
+
+
+# Static mapping, mirrors industry_codes_for_framework(). Maintained by hand;
+# no text classification involved. A framework can map to more than one agent.
+# Keys cover every known framework slug: the 10 values of FRAMEWORK_FOLDER_MAP
+# plus the 4 SUGEF/CONASSIF slugs (the fifth member of SECTOR_FRAMEWORKS,
+# corporate_governance, is already one of the 10).
+FRAMEWORK_AGENT_MAP: dict[str, list[str]] = {
+    "iso_42001": ["normativa", "proveedores"],
+    "nist_airmf": ["normativa"],
+    "eu_ai_act": ["normativa"],
+    "gdpr": ["privacidad", "normativa", "proveedores"],
+    "owasp_llm_top10": ["seguridad"],
+    "mitre_atlas": ["seguridad"],
+    "pci_dss": ["seguridad", "normativa"],
+    "cybersecurity": ["seguridad"],
+    "corporate_governance": ["normativa", "proveedores"],
+    "local_data_protection": ["privacidad"],
+    "sugef_10_07": ["normativa"],
+    "sugef_18_16": ["normativa"],
+    "sugef_24_22": ["normativa"],
+    "conassif": ["normativa"],
+}
+
+
+def agent_tags_for_framework(framework: str | None) -> list[str]:
+    """Return the agent_tags list to tag a document with.
+
+    Use case: called once per file during seeding, right after the framework
+    slug is resolved from the topic folder, to decide which business agents
+    (normativa, seguridad, proveedores, privacidad) the document serves.
+
+    Input:  framework — the framework slug (e.g. "gdpr") or None when the
+            topic folder was not recognized.
+    Output: list of agent slugs. Documents with unrecognized or missing
+            framework get tagged ["general"] instead of an empty list, so
+            they remain retrievable as a fallback instead of disappearing
+            silently from every agent.
+    """
+    if framework is None:
+        return ["general"]
+    return FRAMEWORK_AGENT_MAP.get(framework, ["general"])
 
 
 def _normalize_topic_key(name: str) -> str:
@@ -224,7 +273,12 @@ def seed_documents(folder: Path, force: bool = False) -> None:
         filename = file_path.name
         country_label = country or "global"
         framework_label = framework or "any"
-        label = f"{country_label}/{framework_label}"
+        # Both tag sets derive statically from the framework slug, so they
+        # are known before any DB work. agent_tags goes into the log label
+        # to make the agent assignment auditable during the run.
+        industry_codes = industry_codes_for_framework(framework)
+        agent_tags = agent_tags_for_framework(framework)
+        label = f"{country_label}/{framework_label}/agents={agent_tags}"
 
         existing = find_existing_document(db, filename, country)
 
@@ -233,19 +287,21 @@ def seed_documents(folder: Path, force: bool = False) -> None:
             skipped += 1
             continue
 
-        industry_codes = industry_codes_for_framework(framework)
-
         try:
             if existing:
                 logger.info(
                     f"REPROCESS: '{filename}' [{label}] "
                     f"(prev status={existing['status']})"
                 )
-                # Patch the framework and industry_codes on the document row
-                # BEFORE reprocessing so process_document() propagates them
-                # to every chunk.
+                # Patch framework, industry_codes and agent_tags on the
+                # document row BEFORE reprocessing so process_document()
+                # propagates them to every chunk.
                 db.table("documents").update(
-                    {"framework": framework, "industry_codes": industry_codes}
+                    {
+                        "framework": framework,
+                        "industry_codes": industry_codes,
+                        "agent_tags": agent_tags,
+                    }
                 ).eq("id", existing["id"]).execute()
                 service.process_document(existing["id"])
                 logger.info(f"OK: '{filename}' [{label}] reprocessed (doc_id={existing['id']})")
@@ -259,9 +315,10 @@ def seed_documents(folder: Path, force: bool = False) -> None:
                     country=country,
                     framework=framework,
                 )
-                # Tag industry_codes on the newly created document row.
+                # Tag industry_codes and agent_tags on the newly created
+                # document row BEFORE processing so the chunks inherit them.
                 db.table("documents").update(
-                    {"industry_codes": industry_codes}
+                    {"industry_codes": industry_codes, "agent_tags": agent_tags}
                 ).eq("id", str(doc.id)).execute()
                 service.process_document(str(doc.id))
                 logger.info(f"OK: '{filename}' [{label}] ingested (doc_id={doc.id})")

@@ -500,6 +500,13 @@ class AIService:
             # to pure vector search, so keyword-strong queries (e.g. a law by
             # number like "Ley 8968") failed to surface the right chunk.
             use_hybrid=settings.retrieval_use_hybrid,
+            # Business-agent scoping. Both default to "no agent filtering"
+            # on the schema, so requests that omit them behave exactly as
+            # they did before agent tags existed. When agent_tags IS set,
+            # RetrievalService may transparently broaden the search to
+            # include the 'general' corpus — see docs/rag/agent_tags.md.
+            agent_tags=request.agent_tags,
+            enable_general_fallback=request.enable_general_fallback,
         )
         logger.debug(f"Retrieved {len(retrieved_chunks)} context chunks")
 
