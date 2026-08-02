@@ -29,6 +29,23 @@ from app.core.logging import get_logger
 from app.domain.evals import graders
 from app.domain.evals.llm_judge import judge_response
 
+# Grounding level below which we flag hallucination WITHOUT a judge verdict.
+#
+# This is a last-resort proxy, used only when the LLM judge failed outright.
+# RECALIBRATED for the containment formula: the previous value of 0.05 was
+# tuned for Jaccard, where scores were compressed toward zero by context
+# size. Under containment 0.05 means "almost no word of the response appears
+# in the context at all", which essentially never happens for Spanish prose
+# over a Spanish corpus — the check had become dead code.
+#
+# 0.30 flags the clearly-ungrounded cases from the calibration set (off-topic
+# 0.2105, invented regulation 0.2667) while staying below a legitimate
+# abstention (0.3750), because wrongly flagging hallucination is expensive:
+# the response guardrails rewrite the user-visible answer when it fires.
+# Deliberately more conservative than GROUNDING_THRESHOLD (0.40) — a coarse
+# proxy should under-flag, not over-flag.
+_HALLUCINATION_FALLBACK_GROUNDING = 0.30
+
 logger = get_logger(__name__)
 
 
@@ -123,7 +140,11 @@ def evaluate_response(
     # fall back to "very low grounding" as a coarse proxy so the
     # downstream guardrails / risk scorer still have a signal.
     hallucination = bool(judge_result.get("hallucination", False))
-    if not judge_result.get("ok") and grounding < 0.05 and chunk_texts:
+    if (
+        not judge_result.get("ok")
+        and grounding < _HALLUCINATION_FALLBACK_GROUNDING
+        and chunk_texts
+    ):
         hallucination = True
 
     should_have_said_idk = bool(judge_result.get("should_have_said_idk", False))

@@ -17,7 +17,9 @@
 #
 #   1. grounding_score: Does the response use words from the context?
 #      Low score = possible hallucination or ignoring context.
-#      Uses Jaccard similarity (word overlap).
+#      Uses CONTAINMENT (share of response words found in the
+#      context), not Jaccard — see the function docstring for why
+#      Jaccard was wrong here.
 #
 #   2. length_ok: Is the response a reasonable length?
 #      Very short responses (< 10 words) may be unhelpful.
@@ -42,8 +44,10 @@ def grounding_score(response_text: str, chunk_texts: list[str]) -> float:
     """
     Measure how grounded the response is in the retrieved context.
 
-    Uses Jaccard similarity: the proportion of words in the response
+    Uses CONTAINMENT: the proportion of the response's meaningful words
     that also appear in the retrieved chunks.
+
+        score = |response_words ∩ context_words| / |response_words|
 
     WHY THIS WORKS AS A PROXY:
     If the AI used the retrieved context, its response will naturally
@@ -51,22 +55,40 @@ def grounding_score(response_text: str, chunk_texts: list[str]) -> float:
     AI may be generating from its training data (hallucinating)
     rather than from the provided documents.
 
+    WHY NOT JACCARD (the previous implementation):
+    This function used to divide by the UNION of both word sets, which
+    made the score a function of how much context was retrieved rather
+    than of how grounded the answer was. With a 78-word answer over a
+    516-word context, the arithmetic maximum was 78/594 = 0.1416 — below
+    the GROUNDING_THRESHOLD of 0.15 the caller compares against, so NO
+    response could pass, no matter how perfectly grounded. Worse, the
+    metric moved the wrong way: retrieving MORE relevant context grew the
+    union and pushed the score DOWN, so genuine retrieval improvements
+    registered as quality regressions. Containment removes the dependency
+    on context size entirely, and matches what this docstring always
+    claimed the function did.
+
     LIMITATION:
-    This is a crude heuristic — common words inflate the score.
-    A proper hallucination detector would check factual claims.
+    This is still a crude lexical heuristic — shared common words inflate
+    it, and it cannot tell a correct claim from a fluent invented one.
+    The LLM judge (app/domain/evals/llm_judge.py) is the real
+    hallucination check; this is the free fallback for when it is
+    unavailable.
 
     Args:
         response_text: The LLM's generated response.
         chunk_texts:   List of retrieved document chunk texts.
 
     Returns:
-        A float between 0.0 and 1.0.
-        Higher = more words from response appear in the context.
-        0.0 = no overlap (response shares no words with context).
-        1.0 = all response words appear in context (rare).
+        A float between 0.0 and 1.0, independent of context length.
+        0.0 = no response word appears in the context.
+        1.0 = every meaningful response word appears in the context.
 
-    Typical good responses: 0.15–0.50
-    Concerning scores: < 0.10 (possible hallucination)
+    Calibrated bands (measured on the Normativa validation set, see
+    GROUNDING_THRESHOLD in app/domain/evals/service.py):
+        >= 0.60  grounded — response vocabulary comes from the context
+        0.35–0.60 partially grounded / heavy paraphrase
+        < 0.35   concerning — likely answering from model priors
     """
     if not response_text.strip() or not chunk_texts:
         return 0.0
@@ -99,16 +121,17 @@ def grounding_score(response_text: str, chunk_texts: list[str]) -> float:
     if not context_words:
         return 0.0
 
-    # Jaccard similarity: |intersection| / |union|
-    # This measures the overlap between response words and context words
+    # Containment: what share of the RESPONSE is covered by the context.
+    # The denominator is deliberately the response size only — using the
+    # union here is what made the metric unreachable (see docstring).
     intersection = response_words & context_words
-    union = response_words | context_words
 
-    score = len(intersection) / len(union) if union else 0.0
+    score = len(intersection) / len(response_words)
 
     logger.debug(
         f"Grounding score: {score:.3f} "
-        f"({len(intersection)}/{len(union)} words overlap)"
+        f"({len(intersection)}/{len(response_words)} response words found "
+        f"in {len(context_words)} context words)"
     )
 
     return round(score, 4)

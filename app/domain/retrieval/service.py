@@ -527,7 +527,30 @@ class RetrievalService:
         # max_per_document chunks before any document contributes a second
         # batch. Prevents a single high-similarity document (e.g. one that
         # shares the query language) from monopolising every top-k slot.
-        max_per_doc = settings.retrieval_max_chunks_per_document
+        #
+        # The cap depends on whether this pass is agent-scoped. Searching the
+        # whole heterogeneous corpus needs the strict cap of 1; once agent_tags
+        # has narrowed the pool to one domain, that same cap starves the answer
+        # of depth from the single most relevant document (see
+        # settings.agent_max_chunks_per_document for the full rationale).
+        # agent_tags is already normalised to None-or-non-empty by retrieve(),
+        # so a plain truth test is enough to tell the two regimes apart.
+        if agent_tags:
+            max_per_doc = settings.agent_max_chunks_per_document
+            # INFO, not DEBUG: this is the non-default regime, and being able
+            # to see which cap was in force is what makes an agent's grounding
+            # score interpretable after the fact. Kept inside the branch so
+            # callers that don't use agent_tags see byte-identical logs.
+            logger.info(
+                f"Diversity cap: max {max_per_doc} chunk(s) per document "
+                f"(agent-scoped regime, tags={agent_tags})"
+            )
+        else:
+            max_per_doc = settings.retrieval_max_chunks_per_document
+            logger.debug(
+                f"Diversity cap: max {max_per_doc} chunk(s) per document "
+                f"(broad-corpus regime)"
+            )
         capped_chunks = apply_per_document_cap(ranked_chunks, max_per_doc)
 
         # --- Step 6: Filter by similarity threshold ---

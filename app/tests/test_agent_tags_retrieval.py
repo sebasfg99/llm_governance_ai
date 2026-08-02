@@ -725,3 +725,129 @@ class TestIndustryExclusion:
         )
 
         assert [c.industry_codes for c in result] == [["bank"]]
+
+
+# ============================================================
+# 6. Diversity cap: strict for broad search, permissive when agent-scoped
+#
+# retrieval_max_chunks_per_document=1 protects a heterogeneous whole-corpus
+# search from being monopolised by one long document. Once agent_tags narrows
+# the pool to a single domain, that same cap starves the answer of depth: a
+# question specifically about ISO 42001 could only ever receive ONE ISO chunk,
+# with the remaining top-k slots going to adjacent frameworks. That is what
+# produced grounding=0.045 / hallucination=True on the Normativa validation run.
+# ============================================================
+class TestDiversityCapRegimes:
+    @staticmethod
+    def _skewed_corpus() -> list[dict]:
+        """
+        One dominant document plus enough distinct documents to fill top_k.
+
+        The distinct-document padding matters: apply_per_document_cap does not
+        DROP overflow chunks, it moves them behind the capped ones. With too few
+        documents the overflow would flow straight back into the free top-k
+        slots and both cap values would look identical — which is precisely the
+        shape real retrieval has (dozens of candidate documents), so the test
+        must reproduce it to be meaningful.
+        """
+        rows = [
+            make_row(f"dominant-{i}", 0.99 - i * 0.01, document_id="doc-dominant")
+            for i in range(4)
+        ]
+        rows += [
+            make_row(f"other-{name}", sim, document_id=f"doc-{name}")
+            for name, sim in zip("bcdefg", [0.95, 0.94, 0.93, 0.92, 0.91, 0.90])
+        ]
+        return rows
+
+    @staticmethod
+    def _count_from_dominant(chunks) -> int:
+        return sum(1 for c in chunks if c.document_id == "doc-dominant")
+
+    def test_agent_scoped_pass_uses_permissive_cap(self, service_factory, monkeypatch):
+        """
+        Expected input:  agent_tags set, one document holding the 4 best chunks.
+        Expected output: up to agent_max_chunks_per_document (3) of the top-k
+                         slots come from that document, so the LLM gets real
+                         depth on the relevant source.
+        """
+        monkeypatch.setattr(settings, "similarity_threshold", 0.10)
+        monkeypatch.setattr(settings, "agent_max_chunks_per_document", 3)
+        monkeypatch.setattr(settings, "retrieval_max_chunks_per_document", 1)
+
+        db = FakeDB({"match_chunks": self._skewed_corpus()})
+        result = service_factory(db).retrieve(
+            tenant_id="acme",
+            query="test",
+            top_k=5,
+            agent_tags=["normativa"],
+            enable_general_fallback=False,
+        )
+
+        assert len(result) == 5
+        assert self._count_from_dominant(result) == 3
+
+    def test_unscoped_pass_keeps_strict_cap(self, service_factory, monkeypatch):
+        """
+        The regression guard for every existing caller (generic chat,
+        risk/service.py, policies/service.py): without agent_tags the cap must
+        stay at 1, giving k distinct documents exactly as before this change.
+        """
+        monkeypatch.setattr(settings, "similarity_threshold", 0.10)
+        monkeypatch.setattr(settings, "agent_max_chunks_per_document", 3)
+        monkeypatch.setattr(settings, "retrieval_max_chunks_per_document", 1)
+
+        db = FakeDB({"match_chunks": self._skewed_corpus()})
+        result = service_factory(db).retrieve(
+            tenant_id="acme", query="test", top_k=5
+        )
+
+        assert len(result) == 5
+        assert self._count_from_dominant(result) == 1
+        # 5 slots, 5 different documents.
+        assert len({c.document_id for c in result}) == 5
+
+    @pytest.mark.parametrize("cap,expected", [(1, 1), (2, 2), (4, 4)])
+    def test_permissive_cap_value_is_honoured(
+        self, service_factory, monkeypatch, cap, expected
+    ):
+        """The agent-scoped branch reads agent_max_chunks_per_document, not the
+        general setting — including when it is configured back down to 1."""
+        monkeypatch.setattr(settings, "similarity_threshold", 0.10)
+        monkeypatch.setattr(settings, "agent_max_chunks_per_document", cap)
+        monkeypatch.setattr(settings, "retrieval_max_chunks_per_document", 1)
+
+        db = FakeDB({"match_chunks": self._skewed_corpus()})
+        result = service_factory(db).retrieve(
+            tenant_id="acme",
+            query="test",
+            top_k=5,
+            agent_tags=["normativa"],
+            enable_general_fallback=False,
+        )
+
+        assert self._count_from_dominant(result) == expected
+
+    def test_fallback_pass_also_uses_permissive_cap(self, service_factory, monkeypatch):
+        """
+        Pass 2 receives the broadened tag list, which is still non-empty, so it
+        must stay in the agent-scoped regime. Reverting to cap=1 on the fallback
+        would silently undo the fix for exactly the low-coverage queries that
+        need depth most.
+        """
+        monkeypatch.setattr(settings, "similarity_threshold", 0.10)
+        monkeypatch.setattr(settings, "agent_max_chunks_per_document", 3)
+        monkeypatch.setattr(settings, "retrieval_max_chunks_per_document", 1)
+        # Force the fallback so the returned chunks come from pass 2.
+        monkeypatch.setattr(settings, "agent_fallback_threshold", 0.999)
+
+        db = FakeDB({"match_chunks": self._skewed_corpus()})
+        result = service_factory(db).retrieve(
+            tenant_id="acme", query="test", top_k=5, agent_tags=["normativa"]
+        )
+
+        assert db.agent_tag_args("match_chunks") == [
+            ["normativa"],
+            ["normativa", "general"],
+        ]
+        assert self._count_from_dominant(result) == 3

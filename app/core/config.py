@@ -229,6 +229,35 @@ class Settings(BaseSettings):
     #                  request without agent_tags never reads this value.
     agent_fallback_threshold: float = 0.45
 
+    # Diversity cap used INSTEAD OF retrieval_max_chunks_per_document when the
+    # retrieval is scoped by agent_tags.
+    #
+    # WHY A SEPARATE, MORE PERMISSIVE CAP:
+    # retrieval_max_chunks_per_document = 1 exists to stop one long document
+    # from monopolising the context window when searching the WHOLE
+    # heterogeneous corpus. Once agent_tags narrows retrieval to a single
+    # domain, that cap inverts its own intent: for a question specifically
+    # about ISO 42001, only 1 of the 5 top-k slots could come from ISO 42001
+    # and the other 4 went to adjacent-but-less-specific frameworks (NIST,
+    # PCI, EU AI Act). The LLM received one shallow fragment of the right
+    # document and the governance evaluator correctly flagged the answer as
+    # ungrounded (grounding=0.045, hallucination=True on the Normativa
+    # validation run).
+    #
+    # With the candidate pool already restricted to one agent's domain it is
+    # smaller and far more homogeneous, so allowing more depth from the most
+    # relevant document improves grounding without reintroducing the
+    # cross-domain monopolisation risk the general cap defends against.
+    #
+    # Expected input:  int >= 0, read from AGENT_MAX_CHUNKS_PER_DOCUMENT.
+    #                  0 disables the cap entirely (same convention as the
+    #                  general setting).
+    # Default 3:       leaves at least 2 of the 5 default top-k slots for other
+    #                  documents, so cross-document context is still present.
+    # Effect:          read only when the caller passes a non-empty agent_tags;
+    #                  every other caller keeps the cap of 1 exactly as before.
+    agent_max_chunks_per_document: int = 3
+
     # ----------------------------------------------------------
     # Governance / evaluation settings
     # ----------------------------------------------------------

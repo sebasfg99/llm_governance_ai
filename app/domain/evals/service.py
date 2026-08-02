@@ -22,9 +22,34 @@ from app.domain.evals.evaluator import evaluate_response
 
 logger = get_logger(__name__)
 
-# The minimum grounding score required to "pass" evaluation
-# 0.15 is stricter than the original 0.10 — aligns with improved citation guidance
-GROUNDING_THRESHOLD = 0.15
+# The minimum grounding score required to "pass" evaluation.
+#
+# RECALIBRATED when grounding_score() moved from Jaccard to containment.
+# The old value of 0.15 was tuned against a Jaccard formula whose maximum
+# achievable value depended on context size — with a typical 5-chunk context
+# the ceiling was ~0.14, i.e. BELOW this threshold, so no response could ever
+# pass. Containment is context-size independent, so the threshold can now be
+# calibrated against observed scores instead.
+#
+# Calibration (Normativa validation set, 8 labelled responses over real
+# retrieved context — see docs/evals/grounding_metric.md):
+#
+#   verbatim extract from context .......... 1.0000  grounded
+#   paraphrase + framing .................. 0.9310  grounded
+#   real Case A answer .................... 0.5513  grounded
+#   real Case C answer .................... 0.4545  grounded   <- lowest positive
+#   ------------------------------------------------ threshold 0.40
+#   real Case B1 abstention ............... 0.3750  (abstention, correctly low)
+#   invented reg. w/ domain vocabulary .... 0.3704  UNGROUNDED <- highest negative
+#   invented regulation (article 47 bis) .. 0.2667  UNGROUNDED
+#   off-topic (recipe) .................... 0.2105  UNGROUNDED
+#
+# 0.40 sits inside the observed gap [0.3704, 0.4545]. The margin is genuinely
+# narrow because this is a lexical overlap heuristic: a fluent invention that
+# reuses the domain's vocabulary scores only slightly below a real paraphrase.
+# Treat this as a coarse gate, not a hallucination detector — the LLM judge
+# (llm_judge.py) is the authority, and this is its free fallback.
+GROUNDING_THRESHOLD = 0.40
 
 
 class Evaluation:
@@ -94,6 +119,7 @@ class EvalService:
         citations: list | None = None,
         instructions: str | None = None,
         use_llm_judge: bool = True,
+        precomputed_governance: dict | None = None,
     ) -> Evaluation:
         """
         Run heuristic + LLM-judge graders and persist the evaluation.
@@ -116,7 +142,26 @@ class EvalService:
                            back to chunk_texts when omitted.
             citations:     Optional citations parsed from the response.
             instructions:  Optional system prompt fragment for adherence.
-            use_llm_judge: If False, skip the LLM judge call.
+            use_llm_judge: If False, skip the LLM judge call. Only consulted
+                           when precomputed_governance is None.
+            precomputed_governance:
+                           The output of a previous evaluate_response() call
+                           for this same response — typically the one the
+                           caller already ran to drive guardrails and risk
+                           scoring. When supplied it is persisted AS IS
+                           instead of recomputing.
+
+                           WHY THIS PARAMETER EXISTS:
+                           The caller used to pass use_llm_judge=False here to
+                           avoid paying for the judge twice, which made this
+                           method silently RECOMPUTE the governance block with
+                           no judge available. context_adherence then fell back
+                           to the lexical grounding proxy and hallucination to
+                           a threshold on it, so the persisted row — and the
+                           pass/fail decision built on it — discarded the real
+                           judge verdict that the caller already had in hand.
+                           Passing the verdict through fixes that without
+                           spending a second judge call.
 
         Returns:
             The Evaluation result (also persisted to the DB).
@@ -130,16 +175,29 @@ class EvalService:
         j_valid = json_valid(response_text) if response_mode == "structured" else None
 
         # --- Governance metrics (migration 006) ---
-        eval_chunks = chunks if chunks is not None else chunk_texts
-        governance: dict[str, Any] = evaluate_response(
-            query=query or "",
-            chunks=eval_chunks,
-            response=response_text,
-            citations=citations,
-            instructions=instructions,
-            use_llm_judge=use_llm_judge,
-            response_mode=response_mode,
-        )
+        # Reuse the caller's block when it has one: it was produced by the same
+        # evaluate_response() over the same response, but WITH a live judge, so
+        # recomputing here could only lose information (see the docstring).
+        governance: dict[str, Any]
+        if precomputed_governance:
+            governance = precomputed_governance
+            logger.debug(
+                f"Reusing precomputed governance for trace {trace_id} "
+                f"(judge_ok={governance.get('judge_ok')}, "
+                f"claims={governance.get('claims_supported')}/"
+                f"{governance.get('claims_total')})"
+            )
+        else:
+            eval_chunks = chunks if chunks is not None else chunk_texts
+            governance = evaluate_response(
+                query=query or "",
+                chunks=eval_chunks,
+                response=response_text,
+                citations=citations,
+                instructions=instructions,
+                use_llm_judge=use_llm_judge,
+                response_mode=response_mode,
+            )
 
         # --- Overall pass/fail decision ---
         # Legacy contract: pass if grounding ok + length ok + JSON ok.

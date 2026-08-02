@@ -795,11 +795,15 @@ class AIService:
                     query=request.query,
                     chunks=retrieved_chunks,
                     instructions=None,
-                    # The judge already ran in _run_governance_pipeline; the
-                    # service still re-runs the heuristics + persists the
-                    # full row. We disable the judge here to save the
-                    # double-cost when governance was already produced.
-                    use_llm_judge=governance is None,
+                    # The judge already ran in _run_governance_pipeline. Hand
+                    # its verdict over so the persisted row carries the real
+                    # claim-level judgement instead of recomputing it without
+                    # a judge — which silently downgraded context_adherence
+                    # and hallucination to a lexical proxy. Falsy (missing or
+                    # {} after a failed evaluation) falls through to a fresh
+                    # computation with the judge enabled.
+                    precomputed_governance=(governance or {}).get("evaluation") or None,
+                    use_llm_judge=True,
                 )
             except Exception as e:
                 logger.warning(f"Evaluation failed for trace {trace_id}: {e}")
