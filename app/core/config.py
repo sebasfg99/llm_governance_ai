@@ -191,6 +191,32 @@ class Settings(BaseSettings):
     # lower-similarity but topically-relevant documents a fair shot at context.
     retrieval_max_chunks_per_document: int = 1
 
+    # Multiplier applied by rerank_chunks() to the fused score of a chunk
+    # flagged is_reference_list (a bibliography / list of standard names).
+    #
+    # WHY THIS EXISTS:
+    # A bibliography embeds as a list of standard TITLES, which sits closer
+    # to a question about those standards than the substantive clause that
+    # mentions them once in passing. Measured on ISO 42001: the Anexo C
+    # transparency clause ranked 227th while two Anexo D bibliography chunks
+    # ranked 3rd and 5th, and the resulting answer supported 0 of 4 claims.
+    #
+    # WHY A MULTIPLIER AND NOT AN EXCLUSION:
+    # The chunk must stay retrievable. "Which ISO standards does Anexo D
+    # cite?" is a legitimate question whose only correct answer IS the
+    # bibliography. Demoting rather than dropping keeps that reachable,
+    # and rerank_chunks() waives the penalty entirely when the query is
+    # itself asking about references.
+    #
+    # Expected input:  float in 0.0 - 1.0, read from RETRIEVAL_REFERENCE_PENALTY.
+    #                  1.0 disables the penalty; 0.0 makes it an exclusion in
+    #                  all but name (not recommended, for the reason above).
+    # Default 0.25:    on the observed score distribution this moves a
+    #                  bibliography chunk from ~0.60 to ~0.15, below every
+    #                  substantive competitor, so it surfaces only when
+    #                  genuinely nothing else is relevant.
+    retrieval_reference_penalty: float = 0.25
+
     # Cross-lingual query expansion. When True, every user query is translated
     # into both Spanish and English (one gpt-4o-mini call, ~$0.0001 per query)
     # and the vector search runs with both variants. Results are merged by

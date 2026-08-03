@@ -26,6 +26,7 @@
 # ============================================================
 
 from dataclasses import dataclass
+from app.core.config import settings
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -53,6 +54,10 @@ class ChunkResult:
                         chunk falls before the first marker.
         industry_codes: Industry codes this chunk applies to (e.g. ['bank',
                         'cooperative']). None or ['ALL'] means always include.
+        is_reference_list: True when the chunk is predominantly a bibliography
+                        rather than substantive content. Set at chunking time;
+                        rerank_chunks() demotes these unless the query is
+                        itself asking about references.
     """
     chunk_id: str
     document_id: str
@@ -62,6 +67,7 @@ class ChunkResult:
     similarity: float
     section_ref: str | None = None
     industry_codes: list[str] | None = None
+    is_reference_list: bool = False
 
 
 # ============================================================
@@ -140,6 +146,43 @@ def _section_priority(section_ref: str | None, content: str) -> float:
     return 0.0
 
 
+# ============================================================
+# Reference-seeking queries
+#
+# The penalty on bibliography chunks must not make them
+# unreachable — "which ISO standards does Anexo D cite?" is a
+# legitimate question whose only correct answer IS the
+# bibliography. When the query is itself about references, the
+# penalty is waived and those chunks compete normally.
+#
+# Deliberately narrow. These patterns describe asking ABOUT a
+# document's sources; they are not general topic words. "norma" or
+# "standard" alone would match most of the corpus's questions and
+# waive the penalty almost always, which is the failure mode this
+# has to avoid.
+# ============================================================
+_REFERENCE_QUERY_PATTERNS = re.compile(
+    r"bibliograf[íi]a|bibliography"
+    r"|referencias?\s+(?:normativas?|bibliogr[áa]ficas?)"
+    r"|normative\s+references"
+    r"|\bworks\s+cited\b|\bobras\s+citadas\b"
+    # "what standards does X cite / reference / mention"
+    r"|(?:qu[ée]|cu[áa]les)\s+(?:\w+\s+){0,3}?(?:normas?|est[áa]ndares?|documentos?)"
+    r"\s+(?:\w+\s+){0,3}?(?:cita|citadas?|referencia|referenciadas?|menciona)"
+    r"|(?:normas?|est[áa]ndares?)\s+(?:que\s+)?(?:cita|citadas?|referenciadas?)"
+    r"|(?:standards?|documents?)\s+(?:\w+\s+){0,3}?(?:cited|referenced)"
+    r"|(?:cite[sd]?|references?)\s+(?:\w+\s+){0,3}?(?:standards?|normas?)"
+    r"|lista\s+de\s+(?:normas|referencias|est[áa]ndares)"
+    r"|list\s+of\s+(?:standards|references)",
+    re.IGNORECASE,
+)
+
+
+def _is_reference_seeking_query(query: str) -> bool:
+    """True when the question is about a document's cited sources."""
+    return bool(query and _REFERENCE_QUERY_PATTERNS.search(query))
+
+
 def _length_quality(content: str) -> float:
     """
     Penalise extremely short or extremely long chunks. The function
@@ -169,6 +212,7 @@ def rerank_chunks(
     weight_overlap: float = 0.30,
     weight_section: float = 0.10,
     weight_length: float = 0.05,
+    reference_penalty: float | None = None,
 ) -> list[ChunkResult]:
     """
     Re-rank chunks by combining multiple features.
@@ -184,6 +228,11 @@ def rerank_chunks(
         top_k:             Optional truncation. Returns all when None.
         weight_*:          Linear weights of each feature. Must sum
                            approximately to 1.0.
+        reference_penalty: Multiplier applied to the fused score of
+                           chunks flagged is_reference_list. Defaults
+                           to settings.retrieval_reference_penalty.
+                           Waived (treated as 1.0) when the query is
+                           itself asking about references.
 
     Returns:
         Re-ranked list (highest fused score first).
@@ -199,7 +248,18 @@ def rerank_chunks(
 
     query_tokens = _tokenize_for_overlap(query or "")
 
+    # Reference-list demotion. Resolved once per call rather than per
+    # chunk: it depends only on the query.
+    if reference_penalty is None:
+        reference_penalty = settings.retrieval_reference_penalty
+    reference_query = _is_reference_seeking_query(query or "")
+    if reference_query:
+        # The question is about the sources themselves, so the
+        # bibliography IS the answer. Compete on merit.
+        reference_penalty = 1.0
+
     enriched: list[tuple[float, ChunkResult]] = []
+    penalised = 0
     for chunk in chunks:
         sim = float(chunk.similarity or 0.0)
         overlap = _keyword_overlap(query_tokens, chunk.content or "")
@@ -212,6 +272,15 @@ def rerank_chunks(
             + weight_section * section
             + weight_length * length
         )
+
+        # Applied to the FUSED score, not to similarity alone, so a
+        # bibliography chunk cannot recover the lost ground through
+        # the section/length terms — which it otherwise would, since
+        # it carries a section_ref and sits in the ideal length band.
+        if chunk.is_reference_list and reference_penalty != 1.0:
+            score *= reference_penalty
+            penalised += 1
+
         enriched.append((score, chunk))
 
     enriched.sort(key=lambda pair: pair[0], reverse=True)
@@ -221,6 +290,17 @@ def rerank_chunks(
         f"(weights sim={weight_similarity}, overlap={weight_overlap}, "
         f"section={weight_section}, length={weight_length})"
     )
+    if penalised:
+        logger.debug(
+            f"Demoted {penalised} reference-list chunk(s) by "
+            f"x{reference_penalty}"
+        )
+    elif reference_query:
+        # Worth its own line: it explains why a bibliography chunk is
+        # sitting at the top of the context for this particular answer.
+        logger.info(
+            "Reference-seeking query detected — reference-list penalty waived"
+        )
     if top_k is not None:
         return ranked[:top_k]
     return ranked

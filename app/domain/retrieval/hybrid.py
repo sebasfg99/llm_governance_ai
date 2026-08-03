@@ -152,6 +152,11 @@ def reciprocal_rank_fusion(
             # fact that the filter really applied. Omitting this mapping is
             # precisely what made the old industry post-filter a silent no-op.
             industry_codes=row.get("industry_codes"),
+            # Present from migration 011 onward. Also not a filter — the
+            # penalty is applied later, in rerank_chunks(), which is the
+            # only stage that can see the query and therefore tell a
+            # question about references from a question about content.
+            is_reference_list=bool(row.get("is_reference_list") or False),
         )
         enriched.append((score, chunk))
 

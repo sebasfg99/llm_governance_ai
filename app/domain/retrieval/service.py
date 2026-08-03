@@ -659,8 +659,11 @@ class RetrievalService:
             )
 
         # Convert the raw DB rows into ChunkResult objects.
-        # section_ref and industry_codes are read with .get(...) because rows
-        # produced by older RPCs (pre-migration 005/008) won't carry the columns.
+        # section_ref, industry_codes and is_reference_list are read with
+        # .get(...) because rows produced by older RPCs (pre-migration
+        # 005/008/011) won't carry the columns. The `or False` keeps the
+        # field a bool when the RPC predates migration 011, so a stale
+        # deployment simply applies no penalty instead of erroring.
         return [
             ChunkResult(
                 chunk_id=str(row["id"]),
@@ -671,6 +674,7 @@ class RetrievalService:
                 similarity=float(row["similarity"]),
                 section_ref=row.get("section_ref"),
                 industry_codes=row.get("industry_codes"),
+                is_reference_list=bool(row.get("is_reference_list") or False),
             )
             for row in (result.data or [])
         ]
@@ -758,6 +762,7 @@ class RetrievalService:
                 similarity=float(row["similarity"]),
                 section_ref=row.get("section_ref"),
                 industry_codes=row.get("industry_codes"),
+                is_reference_list=bool(row.get("is_reference_list") or False),
             )
             for row in (result.data or [])
         ]

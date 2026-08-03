@@ -35,6 +35,10 @@ from typing import NamedTuple
 
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.domain.documents.reference_sections import (
+    ReferenceRegionClassifier,
+    find_reference_headings,
+)
 
 logger = get_logger(__name__)
 
@@ -84,6 +88,12 @@ class ChunkWithSection(NamedTuple):
 
     content: str
     section_ref: str | None
+    # True when the chunk is predominantly a bibliography / reference
+    # list rather than substantive content. Defaults to False so
+    # existing constructions of this tuple keep working unchanged.
+    # Consumed by rerank_chunks(), which demotes these chunks so they
+    # stop outranking the content that actually answers a question.
+    is_reference_list: bool = False
 
 
 # ------------------------------------------------------------
@@ -171,6 +181,15 @@ def chunk_text_with_sections(
         text, word_offsets
     )
 
+    # Bibliography headings, projected onto the same word-index space.
+    # This has to happen HERE, on the raw text, because the reference
+    # heading is only distinguishable from the same word used inside a
+    # sentence by the line break around it — and chunk content is
+    # produced by " ".join(words), which destroys that evidence.
+    reference_classifier = ReferenceRegionClassifier(
+        _project_offsets_to_word_indices(find_reference_headings(text), word_offsets)
+    )
+
     total_words = len(word_offsets)
     logger.debug(
         f"Chunking {total_words} words with size={chunk_size}, "
@@ -206,7 +225,20 @@ def chunk_text_with_sections(
         if words_slice:
             content = " ".join(words_slice)
             section_ref = _resolve_section_for_chunk(markers_by_word, start)
-            chunks.append(ChunkWithSection(content=content, section_ref=section_ref))
+            # Must be called for every chunk in document order: the
+            # classifier carries state so a bibliography that spills
+            # past a chunk boundary is still recognised in the
+            # continuation chunk, which contains no heading at all.
+            is_reference_list = reference_classifier.classify(
+                start, end, words_slice
+            )
+            chunks.append(
+                ChunkWithSection(
+                    content=content,
+                    section_ref=section_ref,
+                    is_reference_list=is_reference_list,
+                )
+            )
 
         if end >= total_words:
             break
@@ -221,9 +253,11 @@ def chunk_text_with_sections(
         else:
             start = end - chunk_overlap if end - chunk_overlap > start else end
 
+    reference_chunks = sum(1 for c in chunks if c.is_reference_list)
     logger.debug(
         f"Chunking complete: {total_words} words -> {len(chunks)} chunks "
-        f"(avg {total_words // max(len(chunks), 1)} words/chunk)"
+        f"(avg {total_words // max(len(chunks), 1)} words/chunk, "
+        f"{reference_chunks} flagged as reference lists)"
     )
 
     return chunks
@@ -276,6 +310,32 @@ def _project_markers_to_word_indices(
         markers.append((next_word_idx, marker_text))
 
     return markers
+
+
+def _project_offsets_to_word_indices(
+    char_offsets: list[int],
+    word_offsets: list[tuple[int, str]],
+) -> list[int]:
+    """
+    Convert a sorted list of character offsets into word indices,
+    using the same forward-only two-pointer scan as
+    _project_markers_to_word_indices(). Each result is the index of
+    the first word starting at or after its character offset.
+    """
+    if not word_offsets or not char_offsets:
+        return []
+
+    indices: list[int] = []
+    next_word_idx = 0
+    for char_offset in char_offsets:
+        while (
+            next_word_idx < len(word_offsets)
+            and word_offsets[next_word_idx][0] < char_offset
+        ):
+            next_word_idx += 1
+        indices.append(next_word_idx)
+
+    return indices
 
 
 def _find_snap_boundary(
