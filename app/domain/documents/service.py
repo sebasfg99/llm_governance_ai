@@ -25,10 +25,13 @@
 import os
 import re
 import tempfile
+import time
 import unicodedata
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+import httpx
 from supabase import Client
 
 from app.core.config import settings
@@ -43,6 +46,73 @@ from app.domain.documents.chunking import chunk_text_with_sections
 from app.domain.documents.embeddings import embed_texts
 
 logger = get_logger(__name__)
+
+
+# ============================================================
+# Chunk persistence tuning
+#
+# WHY THESE EXIST:
+# On 2026-07-29 a seed_documents.py --force run lost two documents
+# to transient network errors mid-insert. The EU AI Act (493 chunks)
+# kept exactly 200 — four batches of 50, with the fifth dying on
+# "Server disconnected" — and GDPR (189 chunks) kept zero after a
+# "Broken pipe". Both had processed cleanly in June.
+#
+# Three separate defects combined to make that silent:
+#   1. no retry, so one dropped connection ended the run;
+#   2. chunks were DELETED before the replacements were written, so
+#      a failure destroyed the previously working version;
+#   3. chunk_count was only ever written on the success path, so the
+#      documents kept advertising their old, correct-looking counts
+#      (493 and 189) while holding 200 and 0 rows.
+# ============================================================
+
+# Rows per insert call. The batching itself was never the problem —
+# it was already in place when the failure happened — but the size
+# stays small so a retry re-sends little work.
+_CHUNK_BATCH_SIZE = 50
+
+# Attempts per batch, including the first.
+_CHUNK_INSERT_MAX_ATTEMPTS = 3
+
+# Backoff before attempt 2 and attempt 3.
+_CHUNK_INSERT_BACKOFF_SECONDS = (1.0, 3.0)
+
+# Substrings that mark a dropped or reset connection rather than a
+# rejected request. Matched case-insensitively against str(exc) as a
+# fallback for the transport errors supabase-py re-wraps into plain
+# exceptions, where the type alone no longer identifies them.
+_TRANSIENT_ERROR_SIGNALS = (
+    "server disconnected",
+    "broken pipe",
+    "connection reset",
+    "connection aborted",
+    "remoteprotocolerror",
+    "timed out",
+    "timeout",
+    "temporarily unavailable",
+    "eof occurred",
+)
+
+
+def _is_transient_network_error(exc: BaseException) -> bool:
+    """
+    Whether `exc` looks like a dropped connection worth retrying.
+
+    Deliberately conservative: a request the server actively rejected
+    (a 4xx APIError — bad payload, constraint violation, missing
+    column) will fail identically on every attempt, so retrying it
+    only multiplies the damage and delays the real error. Only
+    transport-level failures are retried.
+    """
+    # postgrest raises APIError for anything the server answered. An
+    # answer means the connection worked, so this is not transient.
+    if type(exc).__name__ == "APIError":
+        return False
+    if isinstance(exc, (httpx.TransportError, ConnectionError, BrokenPipeError)):
+        return True
+    message = str(exc).lower()
+    return any(signal in message for signal in _TRANSIENT_ERROR_SIGNALS)
 
 
 def _sanitize_storage_filename(filename: str) -> str:
@@ -285,18 +355,46 @@ class DocumentService:
                 )
 
             # --- Step 5: Persist chunks (replace any from prior run) ---
-            self.db.table("document_chunks").delete().eq(
-                "document_id", str(document_id)
-            ).execute()
+            #
+            # The previous generation is deleted LAST, not first.
+            #
+            # Deleting first is what turned a dropped connection into
+            # permanent data loss: the old chunks were already gone when
+            # the replacements failed to land, so GDPR went from 189
+            # working chunks to zero and stayed there. Writing the new
+            # generation first means a failure leaves the document
+            # exactly as it was, and the worst case is a short window
+            # where both generations are present.
+            old_chunk_ids = [
+                row["id"]
+                for row in (
+                    self.db.table("document_chunks")
+                    .select("id")
+                    .eq("document_id", str(document_id))
+                    .execute()
+                    .data
+                    or []
+                )
+            ]
 
             now = datetime.now(timezone.utc).isoformat()
             chunk_rows = [
                 {
+                    # Assigned client-side rather than by the column
+                    # default, so the rollback path knows precisely which
+                    # rows this run created without having to trust the
+                    # insert response to come back intact.
+                    "id": str(uuid.uuid4()),
                     "document_id": str(document_id),
                     "tenant_id": tenant_id,
                     "content": chunk.content,
                     "chunk_index": idx,
                     "section_ref": chunk.section_ref,
+                    # Classified by the chunker, which is the only place the
+                    # raw line structure that identifies a bibliography
+                    # heading still exists. Demoted at rerank time, never
+                    # excluded — see migration 011.
+                    "is_reference_list": chunk.is_reference_list,
                     "embedding": embedding,
                     "country": doc.country,
                     "framework": doc.framework,
@@ -312,18 +410,49 @@ class DocumentService:
                     zip(chunks_with_sections, embeddings)
                 )
             ]
-            _CHUNK_BATCH_SIZE = 50
-            for batch_start in range(0, len(chunk_rows), _CHUNK_BATCH_SIZE):
-                batch = chunk_rows[batch_start : batch_start + _CHUNK_BATCH_SIZE]
-                self.db.table("document_chunks").insert(batch).execute()
-            logger.debug(f"Saved {chunk_count} chunks to database")
+            new_chunk_ids = [row["id"] for row in chunk_rows]
+            try:
+                self._insert_chunks_with_retry(chunk_rows, document_id)
+
+                # --- Step 5b: Verify before anything is destroyed ---
+                # Counting is the only thing that actually proves the
+                # rows landed. Trusting the absence of an exception is
+                # what let 200-of-493 pass for a complete document.
+                persisted = self._count_chunks(document_id)
+                expected = len(old_chunk_ids) + chunk_count
+                if persisted != expected:
+                    raise DocumentProcessingError(
+                        f"Chunk persistence incomplete: expected {expected} "
+                        f"rows ({len(old_chunk_ids)} pre-existing + "
+                        f"{chunk_count} new), found {persisted}"
+                    )
+
+                # --- Step 5c: Swap — retire the previous generation ---
+                if old_chunk_ids:
+                    self._delete_chunk_ids(old_chunk_ids)
+            except Exception:
+                # Roll the document back to the state it had on entry:
+                # drop what this run wrote, keep what was already there.
+                self._rollback_new_chunks(new_chunk_ids, document_id)
+                raise
+
+            # --- Step 5d: Final count, and it is what gets recorded ---
+            final_count = self._count_chunks(document_id)
+            if final_count != chunk_count:
+                raise DocumentProcessingError(
+                    f"Chunk count mismatch after swap: expected {chunk_count}, "
+                    f"found {final_count}"
+                )
+            logger.debug(f"Saved and verified {final_count} chunks to database")
 
             # --- Step 6: Mark ready ---
+            # chunk_count is the VERIFIED row count, never the number the
+            # chunker hoped to write.
             now_ts = datetime.now(timezone.utc).isoformat()
             self.db.table("documents").update({
                 "status": DocumentStatus.READY.value,
                 "page_count": page_count,
-                "chunk_count": chunk_count,
+                "chunk_count": final_count,
                 "processed_at": now_ts,
             }).eq("id", str(document_id)).execute()
 
@@ -338,11 +467,30 @@ class DocumentService:
                 f"Document processing failed for {document_id}: {e}",
                 exc_info=True,
             )
-            self.db.table("documents").update({
+            # Record the count that is actually true right now.
+            #
+            # This used to be left untouched on the failure path, which
+            # is why two documents sat at status='failed' still
+            # advertising chunk_count 493 and 189 while holding 200 and
+            # 0 rows. An audit cannot distinguish a real inconsistency
+            # from a stale field unless the field is maintained on both
+            # paths.
+            failure_update = {
                 "status": DocumentStatus.FAILED.value,
                 "error_message": str(e),
                 "processed_at": datetime.now(timezone.utc).isoformat(),
-            }).eq("id", str(document_id)).execute()
+            }
+            try:
+                failure_update["chunk_count"] = self._count_chunks(document_id)
+            except Exception as count_exc:  # noqa: BLE001
+                # Never let bookkeeping mask the original failure.
+                logger.warning(
+                    f"Could not recount chunks for {document_id} "
+                    f"({count_exc}); leaving chunk_count untouched"
+                )
+            self.db.table("documents").update(failure_update).eq(
+                "id", str(document_id)
+            ).execute()
 
             if isinstance(e, (NotFoundError, DocumentProcessingError)):
                 raise
@@ -415,6 +563,112 @@ class DocumentService:
         self.db.table("documents").update(
             {"status": status.value}
         ).eq("id", str(document_id)).execute()
+
+    # ----------------------------------------------------------
+    # Chunk persistence helpers
+    # ----------------------------------------------------------
+    def _count_chunks(self, document_id: str) -> int:
+        """
+        Rows currently in document_chunks for this document.
+
+        Uses PostgREST's exact count rather than len(data) because the
+        API caps returned rows (default 1000); a 493-chunk document is
+        fine today, but len() would start under-reporting silently on a
+        larger one — the exact failure mode this change exists to
+        remove.
+        """
+        result = (
+            self.db.table("document_chunks")
+            .select("id", count="exact")
+            .eq("document_id", str(document_id))
+            .execute()
+        )
+        count = getattr(result, "count", None)
+        if count is None:
+            # Older client versions do not populate .count.
+            return len(result.data or [])
+        return int(count)
+
+    def _insert_chunks_with_retry(
+        self, chunk_rows: list[dict], document_id: str
+    ) -> None:
+        """
+        Insert chunk rows in batches, retrying a batch when the
+        connection drops.
+
+        Only transport failures are retried — see
+        _is_transient_network_error() for why a rejected request is
+        not. The retry is per batch, so a failure at batch 5 of 10
+        re-sends 50 rows, not 500.
+        """
+        total_batches = (len(chunk_rows) + _CHUNK_BATCH_SIZE - 1) // _CHUNK_BATCH_SIZE
+
+        for batch_number, batch_start in enumerate(
+            range(0, len(chunk_rows), _CHUNK_BATCH_SIZE), start=1
+        ):
+            batch = chunk_rows[batch_start : batch_start + _CHUNK_BATCH_SIZE]
+
+            for attempt in range(1, _CHUNK_INSERT_MAX_ATTEMPTS + 1):
+                try:
+                    self.db.table("document_chunks").insert(batch).execute()
+                    break
+                except Exception as e:  # noqa: BLE001 — re-raised below
+                    is_last = attempt == _CHUNK_INSERT_MAX_ATTEMPTS
+                    if not _is_transient_network_error(e) or is_last:
+                        logger.error(
+                            f"Chunk batch {batch_number}/{total_batches} for "
+                            f"document {document_id} failed on attempt "
+                            f"{attempt}/{_CHUNK_INSERT_MAX_ATTEMPTS}: {e}"
+                        )
+                        raise
+                    delay = _CHUNK_INSERT_BACKOFF_SECONDS[
+                        min(attempt - 1, len(_CHUNK_INSERT_BACKOFF_SECONDS) - 1)
+                    ]
+                    logger.warning(
+                        f"Chunk batch {batch_number}/{total_batches} for "
+                        f"document {document_id} hit a transient network error "
+                        f"({e}); retrying in {delay}s "
+                        f"(attempt {attempt + 1}/{_CHUNK_INSERT_MAX_ATTEMPTS})"
+                    )
+                    time.sleep(delay)
+
+    def _delete_chunk_ids(self, chunk_ids: list[str]) -> None:
+        """
+        Delete chunks by id, in batches.
+
+        Batched because the id list travels in the query string, and a
+        493-id `in_` filter is long enough to run into URL limits.
+        """
+        for start in range(0, len(chunk_ids), _CHUNK_BATCH_SIZE):
+            batch = chunk_ids[start : start + _CHUNK_BATCH_SIZE]
+            self.db.table("document_chunks").delete().in_("id", batch).execute()
+
+    def _rollback_new_chunks(self, new_chunk_ids: list[str], document_id: str) -> None:
+        """
+        Remove the rows this run wrote, leaving any previous generation
+        untouched.
+
+        Best-effort by design: it runs while another exception is in
+        flight, and that original error is the one worth surfacing. A
+        rollback that itself fails leaves a real inconsistency, so it
+        is logged at ERROR — and scripts/audit_corpus_health.py exists
+        to find exactly that.
+        """
+        if not new_chunk_ids:
+            return
+        try:
+            self._delete_chunk_ids(new_chunk_ids)
+            logger.info(
+                f"Rolled back {len(new_chunk_ids)} partially inserted chunk(s) "
+                f"for document {document_id}"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.error(
+                f"Rollback of partially inserted chunks FAILED for document "
+                f"{document_id}: {e}. The document may hold a mix of old and "
+                f"new chunks — run scripts/audit_corpus_health.py",
+                exc_info=True,
+            )
 
     # ----------------------------------------------------------
     # Supabase Storage helpers
