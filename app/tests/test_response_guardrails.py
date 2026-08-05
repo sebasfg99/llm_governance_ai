@@ -222,10 +222,21 @@ class TestDisclaimer:
 # IDK guard
 # ============================================================
 class TestIDKGuard:
-    def test_should_have_abstained_rewrites(self):
+    """
+    UPDATED 2026-08: the guard annotates instead of overwriting.
+
+    It used to replace the whole answer with a canned abstention. The
+    signal driving it (should_have_said_idk, from the LLM judge) is
+    stochastic enough that it fired on 6 of 7 evaluated traces in the
+    Normativa validator, destroying correct answers. A false positive
+    now costs one extra line instead of the entire response.
+    """
+
+    def test_should_have_abstained_preserves_response_and_appends_note(self):
+        original = "Una respuesta fundamentada con [Fuente: ISO 42001]."
         result = validate_response_guardrails(
             query="?",
-            response="Una respuesta inventada porque el modelo no se abstuvo.",
+            response=original,
             chunks=[],
             client_id="acme",
             evaluation={
@@ -236,5 +247,54 @@ class TestIDKGuard:
             use_case="chatbot",
         )
         codes = [v["code"] for v in result["violations"]]
+        # Still audited...
         assert "should_have_abstained" in codes
-        assert "informaci\u00f3n suficiente" in result["safe_response"]
+        # ...but the model's answer survives, with the note in its own paragraph.
+        assert original in result["safe_response"]
+        assert result["safe_response"].endswith(
+            "\n\n*Nota: la cobertura documental para esta consulta podr\u00eda ser parcial.*"
+        )
+        # The old canned abstention must not reappear.
+        assert "informaci\u00f3n suficiente" not in result["safe_response"]
+
+    def test_note_is_not_duplicated(self):
+        """
+        Expected input:  a response that already carries the note (e.g. a
+                         re-validated trace).
+        Expected output: exactly one occurrence \u2014 the guard is idempotent.
+        """
+        note = "*Nota: la cobertura documental para esta consulta podr\u00eda ser parcial.*"
+        result = validate_response_guardrails(
+            query="?",
+            response=f"Contenido citado [Fuente: X].\n\n{note}",
+            chunks=[],
+            client_id="acme",
+            evaluation={
+                "hallucination": False,
+                "context_adherence_score": 0.95,
+                "should_have_said_idk": True,
+            },
+            use_case="chatbot",
+        )
+        assert result["safe_response"].count(note) == 1
+
+    def test_no_note_when_guard_does_not_fire(self):
+        """
+        Expected input:  should_have_said_idk False.
+        Expected output: response untouched, no note appended.
+        """
+        original = "Una respuesta fundamentada con [Fuente: ISO 42001]."
+        result = validate_response_guardrails(
+            query="?",
+            response=original,
+            chunks=[],
+            client_id="acme",
+            evaluation={
+                "hallucination": False,
+                "context_adherence_score": 0.95,
+                "should_have_said_idk": False,
+            },
+            use_case="chatbot",
+        )
+        assert result["safe_response"] == original
+        assert "Nota: la cobertura documental" not in result["safe_response"]

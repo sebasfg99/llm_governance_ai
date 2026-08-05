@@ -216,6 +216,14 @@ _DEFAULT_DISCLAIMER = (
     "su equipo legal/compliance antes de aplicar."
 )
 
+# Appended when the judge flags should_have_said_idk. Doubles as the
+# idempotency sentinel \u2014 the guard checks for this exact string before
+# appending, so re-running validation over an already-annotated response
+# cannot stack the note twice.
+_IDK_DISCLAIMER = (
+    "*Nota: la cobertura documental para esta consulta podr\u00eda ser parcial.*"
+)
+
 # Threshold below which "strict context adherence" rejects the answer.
 STRICT_CONTEXT_THRESHOLD = 0.7
 
@@ -352,23 +360,38 @@ def validate_response_guardrails(
             )
 
     # ---- 4. IDK guard ----
+    # DECISI\u00d3N DE ARQUITECTURA (2026-08): anotar, no sobrescribir.
+    #
+    # Este guard reemplazaba la respuesta completa por una abstenci\u00f3n
+    # enlatada. El problema es la se\u00f1al que lo dispara: should_have_said_idk
+    # viene del LLM judge, que tiene varianza estoc\u00e1stica alta \u2014 con el mismo
+    # input y temperature=0 en ambos extremos, el mismo contenido recibe
+    # veredictos distintos entre corridas. Medido sobre el validador
+    # Normativa, dispar\u00f3 en 6 de 7 trazas evaluadas, incluidas respuestas
+    # correctas y bien citadas.
+    #
+    # El costo de un falso positivo era total: se destru\u00eda una respuesta
+    # fundamentada y el usuario recib\u00eda texto gen\u00e9rico. El costo de un falso
+    # negativo, en cambio, es una nota de m\u00e1s. Con esa asimetr\u00eda, anotar es
+    # la opci\u00f3n correcta.
+    #
+    # La violaci\u00f3n se sigue registrando en `violations` para auditor\u00eda; lo
+    # \u00fanico que cambia es que la respuesta del modelo se preserva.
     if evaluation and evaluation.get("should_have_said_idk"):
         violations.append(
             {
                 "code": "should_have_abstained",
                 "severity": "medium",
                 "message": (
-                    "Los documentos recuperados no contienen informaci\u00f3n "
-                    "suficiente para esta consulta. La respuesta se reescribe "
-                    "como abstenci\u00f3n controlada."
+                    "El evaluador identific\u00f3 posible cobertura parcial de los "
+                    "documentos recuperados. Se preserv\u00f3 la respuesta del modelo "
+                    "y se agreg\u00f3 un aviso al usuario."
                 ),
             }
         )
-        safe_response = (
-            "No tengo informaci\u00f3n suficiente en los documentos disponibles "
-            "para responder con certeza. Te recomiendo aportar m\u00e1s contexto "
-            "o consultar la fuente original."
-        )
+        # P\u00e1rrafo aparte, y solo si no est\u00e1 ya presente.
+        if safe_response and _IDK_DISCLAIMER not in safe_response:
+            safe_response = safe_response.rstrip() + "\n\n" + _IDK_DISCLAIMER
 
     # ---- 5. Strict context adherence ----
     needs_strict = (
