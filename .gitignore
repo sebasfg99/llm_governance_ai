@@ -56,3 +56,7 @@ build/
 
 # --- Docker volumes (if using local bind mounts) ---
 postgres_data/
+
+# --- e2e validator output logs ---
+validation_output.log
+validation_result.txt
