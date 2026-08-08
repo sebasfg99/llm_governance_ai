@@ -1,8 +1,24 @@
 # The grounding metric: from Jaccard to containment
 
-Status: **fixed**. `grounding_score()` measures containment,
-`GROUNDING_THRESHOLD` is recalibrated to `0.40`, and the persisted evaluation
-now reuses the LLM judge's verdict instead of a lexical proxy.
+> ## ⚠️ SUPERSEDED (2026-08) — see [`docs/rag/grounding_metric_v2.md`](../rag/grounding_metric_v2.md)
+>
+> This document describes the **lexical** era of `grounding_score()` and the
+> `0.40` threshold. Both are gone: the metric is now embedding cosine and the
+> threshold is `0.62`, because word overlap turned out to be *inverted* on a
+> bilingual corpus — a fabricated answer scored 0.462 while a correct answer
+> resting on English sources scored 0.242.
+>
+> Kept because the Jaccard → containment fix described below is still the
+> reason the threshold moved off 0.15, and because the reasoning about why a
+> length-dependent denominator is wrong still applies.
+>
+> **Every score in this document is on the old scale and is not comparable to
+> anything produced after `evaluator_version = "v3.semantic"`.**
+
+Status: **superseded**. Historically: `grounding_score()` measured containment,
+`GROUNDING_THRESHOLD` was recalibrated to `0.40`, and the persisted evaluation
+reuses the LLM judge's verdict instead of a lexical proxy (that last part still
+holds).
 
 ---
 

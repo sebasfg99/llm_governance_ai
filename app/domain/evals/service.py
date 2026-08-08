@@ -24,32 +24,50 @@ logger = get_logger(__name__)
 
 # The minimum grounding score required to "pass" evaluation.
 #
-# RECALIBRATED when grounding_score() moved from Jaccard to containment.
-# The old value of 0.15 was tuned against a Jaccard formula whose maximum
-# achievable value depended on context size — with a typical 5-chunk context
-# the ceiling was ~0.14, i.e. BELOW this threshold, so no response could ever
-# pass. Containment is context-size independent, so the threshold can now be
-# calibrated against observed scores instead.
+# RECALIBRATED for the v3 semantic metric (2026-08). grounding_score()
+# used to be lexical word overlap; it is now embedding cosine, so this
+# threshold is on a DIFFERENT SCALE and the old value of 0.40 is
+# meaningless against it.
 #
-# Calibration (Normativa validation set, 8 labelled responses over real
-# retrieved context — see docs/evals/grounding_metric.md):
+# WHY THE METRIC CHANGED: the lexical version was inverted on this
+# bilingual corpus — a fabricated answer scored 0.462 while a CORRECT
+# answer whose evidence was in English scored 0.242, and off-topic text
+# scored 0.293. Word overlap cannot see evidence in a language the
+# answer is not written in. See graders.grounding_score().
 #
-#   verbatim extract from context .......... 1.0000  grounded
-#   paraphrase + framing .................. 0.9310  grounded
-#   real Case A answer .................... 0.5513  grounded
-#   real Case C answer .................... 0.4545  grounded   <- lowest positive
-#   ------------------------------------------------ threshold 0.40
-#   real Case B1 abstention ............... 0.3750  (abstention, correctly low)
-#   invented reg. w/ domain vocabulary .... 0.3704  UNGROUNDED <- highest negative
-#   invented regulation (article 47 bis) .. 0.2667  UNGROUNDED
-#   off-topic (recipe) .................... 0.2105  UNGROUNDED
+# Calibration (n=35, scripts/calibrate_grounding_metric.py):
 #
-# 0.40 sits inside the observed gap [0.3704, 0.4545]. The margin is genuinely
-# narrow because this is a lexical overlap heuristic: a fluent invention that
-# reuses the domain's vocabulary scores only slightly below a real paraphrase.
-# Treat this as a coarse gate, not a hallucination detector — the LLM judge
-# (llm_judge.py) is the authority, and this is its free fallback.
-GROUNDING_THRESHOLD = 0.40
+#   group                        n    semantic mean [min-max]
+#   real answer, ES sources     10    0.790  [0.70-0.87]
+#   real answer, EN sources     10    0.638  [0.50-0.74]
+#   fabricated but plausible    10    0.597  [0.39-0.73]
+#   off-topic (control)          5    0.148  [0.11-0.24]
+#
+# Threshold sweep over that set, 0.01 steps:
+#
+#   0.55  keeps 95% of real, admits 53% of ungrounded   separation +0.42
+#   0.60  keeps 85% of real, admits 27% of ungrounded   separation +0.58
+#   0.62  keeps 80% of real, admits 20% of ungrounded   separation +0.60  <-
+#   0.65  keeps 70% of real, admits 13% of ungrounded   separation +0.57
+#
+# 0.62 is the maximum-separation point. For comparison, the old lexical
+# gate at 0.40 kept only 60% of real answers while admitting 40% of
+# ungrounded ones, so this is better on BOTH axes.
+#
+# The margin is still not clean: real-EN (0.638) and fabricated (0.597)
+# overlap, because semantic similarity measures topical closeness rather
+# than factual support. Treat this as a coarse gate, not a hallucination
+# detector — the LLM judge (llm_judge.py) is the authority, and this is
+# its free fallback.
+GROUNDING_THRESHOLD = 0.62
+
+# Written to evaluations.evaluator_version on every new row.
+#
+# Bumped from "v2.governance" when grounding_score() moved from lexical
+# overlap to embedding cosine. The two scales are NOT comparable, so any
+# dashboard or trend over evaluations.grounding_score MUST filter by this
+# column. Historical rows keep "v2.governance" and are never rewritten.
+EVALUATOR_VERSION = "v3.semantic"
 
 
 class Evaluation:
@@ -267,7 +285,7 @@ class EvalService:
                 "claims_total":                governance["claims_total"],
                 "claims_supported":            governance["claims_supported"],
                 "judge_raw_json":              governance.get("judge_raw"),
-                "evaluator_version":           "v2.governance",
+                "evaluator_version":           EVALUATOR_VERSION,
             }).execute()
 
             row = result.data[0] if result.data else {}

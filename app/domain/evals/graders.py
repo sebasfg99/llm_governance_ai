@@ -3,23 +3,23 @@
 #
 # WHY THIS FILE EXISTS:
 # After every AI response, we automatically check its quality
-# using simple heuristics. These checks are:
-#   - FREE (no API calls)
-#   - FAST (pure Python, milliseconds)
-#   - TRANSPARENT (easy to understand and adjust)
+# using cheap graders. Most are pure Python; grounding_score is the
+# one exception (see below).
 #
 # WHY NOT LLM-AS-JUDGE:
 # An LLM grader would be more accurate but adds cost and latency
-# to every single response. For the MVP, rule-based heuristics
-# give us useful signal without those costs.
+# to every single response. These graders give useful signal at a
+# fraction of that cost. The judge
+# (app/domain/evals/llm_judge.py) remains the real hallucination
+# check; these are the always-available baseline.
 #
 # THE THREE GRADERS:
 #
-#   1. grounding_score: Does the response use words from the context?
-#      Low score = possible hallucination or ignoring context.
-#      Uses CONTAINMENT (share of response words found in the
-#      context), not Jaccard — see the function docstring for why
-#      Jaccard was wrong here.
+#   1. grounding_score: Is the response semantically supported by the
+#      retrieved context? Embedding cosine, NOT word overlap — the
+#      lexical version was measurably inverted on a bilingual corpus
+#      (see the function docstring). This is the only grader that
+#      costs an API call.
 #
 #   2. length_ok: Is the response a reasonable length?
 #      Very short responses (< 10 words) may be unhelpful.
@@ -33,72 +33,80 @@
 # TODO: Add factual consistency check against retrieved chunks
 # ============================================================
 
+import hashlib
 import json
+import math
 import re
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-def grounding_score(response_text: str, chunk_texts: list[str]) -> float:
+# ------------------------------------------------------------
+# Embedding cache for grounding_score
+#
+# WHY: grounding_score() is computed TWICE per query — once by
+# evaluator.evaluate_response() and once by
+# EvalService.evaluate_trace() — over the same response and the same
+# chunks. Without a cache the semantic implementation would pay for
+# every embedding twice. Keyed by a hash of the exact text, so a
+# repeat within the same request is free and a different text always
+# misses.
+#
+# Bounded because this is a module-level dict in a long-lived process:
+# an unbounded cache would grow with every distinct answer served.
+# ------------------------------------------------------------
+_EMBED_CACHE: dict[str, list[float]] = {}
+_EMBED_CACHE_MAX = 512
+
+
+def _cache_key(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _embed_cached(texts: list[str]) -> list[list[float]]:
+    """Embed `texts`, reusing anything already seen in this process."""
+    from app.domain.documents.embeddings import embed_texts
+
+    missing = [t for t in texts if _cache_key(t) not in _EMBED_CACHE]
+    if missing:
+        # De-duplicate before the API call: the same chunk can appear
+        # twice in one context.
+        unique = list(dict.fromkeys(missing))
+        vectors = embed_texts(unique)
+        for text, vector in zip(unique, vectors):
+            if len(_EMBED_CACHE) >= _EMBED_CACHE_MAX:
+                # Cheap eviction: drop the oldest inserted key. Python
+                # dicts keep insertion order, so this is FIFO.
+                _EMBED_CACHE.pop(next(iter(_EMBED_CACHE)))
+            _EMBED_CACHE[_cache_key(text)] = vector
+    return [_EMBED_CACHE[_cache_key(t)] for t in texts]
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+    if not norm_a or not norm_b:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def _lexical_containment(response_text: str, chunk_texts: list[str]) -> float:
     """
-    Measure how grounded the response is in the retrieved context.
+    The pre-v3 lexical metric: share of the response's meaningful words
+    that also appear in the context.
 
-    Uses CONTAINMENT: the proportion of the response's meaningful words
-    that also appear in the retrieved chunks.
-
-        score = |response_words ∩ context_words| / |response_words|
-
-    WHY THIS WORKS AS A PROXY:
-    If the AI used the retrieved context, its response will naturally
-    contain many of the same words. A very low overlap suggests the
-    AI may be generating from its training data (hallucinating)
-    rather than from the provided documents.
-
-    WHY NOT JACCARD (the previous implementation):
-    This function used to divide by the UNION of both word sets, which
-    made the score a function of how much context was retrieved rather
-    than of how grounded the answer was. With a 78-word answer over a
-    516-word context, the arithmetic maximum was 78/594 = 0.1416 — below
-    the GROUNDING_THRESHOLD of 0.15 the caller compares against, so NO
-    response could pass, no matter how perfectly grounded. Worse, the
-    metric moved the wrong way: retrieving MORE relevant context grew the
-    union and pushed the score DOWN, so genuine retrieval improvements
-    registered as quality regressions. Containment removes the dependency
-    on context size entirely, and matches what this docstring always
-    claimed the function did.
-
-    LIMITATION:
-    This is still a crude lexical heuristic — shared common words inflate
-    it, and it cannot tell a correct claim from a fluent invented one.
-    The LLM judge (app/domain/evals/llm_judge.py) is the real
-    hallucination check; this is the free fallback for when it is
-    unavailable.
-
-    Args:
-        response_text: The LLM's generated response.
-        chunk_texts:   List of retrieved document chunk texts.
-
-    Returns:
-        A float between 0.0 and 1.0, independent of context length.
-        0.0 = no response word appears in the context.
-        1.0 = every meaningful response word appears in the context.
-
-    Calibrated bands (measured on the Normativa validation set, see
-    GROUNDING_THRESHOLD in app/domain/evals/service.py):
-        >= 0.60  grounded — response vocabulary comes from the context
-        0.35–0.60 partially grounded / heavy paraphrase
-        < 0.35   concerning — likely answering from model priors
+    Kept ONLY as the degraded path for when the embedding API is
+    unavailable. It is not the metric any more, and its scale is not
+    comparable to the semantic one — see grounding_score().
     """
     if not response_text.strip() or not chunk_texts:
         return 0.0
 
-    # Tokenize: lowercase, split on whitespace, remove punctuation
     def tokenize(text: str) -> set[str]:
-        # Remove punctuation and lowercase for fair comparison
         clean = re.sub(r"[^\w\s]", " ", text.lower())
         words = set(clean.split())
-        # Remove very common stop words that inflate scores
         stop_words = {
             "the", "a", "an", "is", "are", "was", "were", "be", "been",
             "being", "have", "has", "had", "do", "does", "did", "will",
@@ -108,33 +116,126 @@ def grounding_score(response_text: str, chunk_texts: list[str]) -> float:
         }
         return words - stop_words
 
-    # Get the unique meaningful words in the response
     response_words = tokenize(response_text)
     if not response_words:
         return 0.0
-
-    # Get the union of all words across all retrieved chunks
     context_words: set[str] = set()
     for chunk in chunk_texts:
         context_words |= tokenize(chunk)
-
     if not context_words:
         return 0.0
+    return round(len(response_words & context_words) / len(response_words), 4)
 
-    # Containment: what share of the RESPONSE is covered by the context.
-    # The denominator is deliberately the response size only — using the
-    # union here is what made the metric unreachable (see docstring).
-    intersection = response_words & context_words
 
-    score = len(intersection) / len(response_words)
+def grounding_score(
+    response_text: str,
+    chunk_texts: list[str],
+    chunk_embeddings: list[list[float]] | None = None,
+) -> float:
+    """
+    Measure how well the retrieved context supports the response.
+
+    Cosine similarity between the response embedding and each chunk
+    embedding, taking the MAXIMUM:
+
+        score = max over chunks of cosine(embed(response), embed(chunk))
+
+    Maximum rather than mean because a grounded answer usually rests on
+    one or two chunks of the five retrieved; averaging would punish an
+    answer for the irrelevant chunks retrieval happened to return.
+
+    WHY THIS REPLACED THE LEXICAL METRIC (v3, 2026-08):
+    The previous implementation measured word overlap. On a bilingual
+    corpus that turned out to be INVERTED, not merely weak. Measured
+    over 35 samples (scripts/calibrate_grounding_metric.py):
+
+        group                     lexical   semantic
+        real answer, ES sources     0.717      0.790
+        real answer, EN sources     0.242      0.638
+        fabricated but plausible    0.462      0.597
+        off-topic (control)         0.293      0.148
+
+    A fabricated answer scored nearly twice as high as a CORRECT answer
+    whose evidence was in English (0.462 vs 0.242), and even off-topic
+    text outscored it (0.293). The cause: word overlap can only see
+    evidence written in the same language as the answer, and answers are
+    always Spanish by prompt while much of the corpus (OWASP, MITRE
+    ATLAS, PCI DSS EN) is English. Containment against English-only
+    chunks measured ~0.07 — those chunks were effectively invisible.
+
+    Embeddings are multilingual, so the semantic score reads evidence in
+    either language and orders the four groups correctly.
+
+    CALIBRATED BANDS (semantic scale — NOT comparable to the old one):
+        >= 0.70   well grounded
+        0.62–0.70 grounded; 0.62 is GROUNDING_THRESHOLD
+                  (app/domain/evals/service.py), the point of maximum
+                  separation: keeps 80% of real answers, admits 20% of
+                  fabricated ones
+        0.35–0.62 weak — plausible invention lives here
+        < 0.35    off-topic; measured max for off-topic text was 0.148
+
+    LIMITATION — READ BEFORE TRUSTING IT:
+    At 0.62 this still admits 20% of plausible fabrications and rejects
+    20% of genuine answers. Semantic similarity measures topical
+    closeness, not factual support: an invented clause about the right
+    subject scores close to a real one. The LLM judge
+    (app/domain/evals/llm_judge.py) is the actual hallucination check.
+    This is the free, always-available fallback, and it is better than
+    the lexical one at exactly that job — nothing more.
+
+    COST:
+    One embedding call for the response, plus one per chunk unless the
+    caller supplies chunk_embeddings. Results are cached per process, so
+    the two calls per query (evaluator + eval service) pay once.
+
+    Args:
+        response_text:    The LLM's generated response.
+        chunk_texts:      Retrieved document chunk texts.
+        chunk_embeddings: Optional precomputed vectors for chunk_texts,
+                          in the same order. Pass them when they are
+                          already at hand (document_chunks.embedding) to
+                          skip re-embedding.
+
+    Returns:
+        Float in 0.0–1.0. 0.0 when there is no response or no context.
+
+    Degraded path:
+        If the embedding call fails, falls back to the pre-v3 lexical
+        containment and logs a warning. The value is then on the OLD
+        scale and will read low against the 0.62 threshold — that is
+        deliberate: a scoring outage should not silently pass answers.
+    """
+    if not response_text.strip() or not chunk_texts:
+        return 0.0
+
+    try:
+        response_vector = _embed_cached([response_text])[0]
+        if chunk_embeddings is not None:
+            if len(chunk_embeddings) != len(chunk_texts):
+                raise ValueError(
+                    f"chunk_embeddings has {len(chunk_embeddings)} vectors "
+                    f"for {len(chunk_texts)} chunks"
+                )
+            vectors = chunk_embeddings
+        else:
+            vectors = _embed_cached(chunk_texts)
+    except Exception as e:  # noqa: BLE001 — scoring must not break the pipeline
+        fallback = _lexical_containment(response_text, chunk_texts)
+        logger.warning(
+            f"Semantic grounding unavailable ({e}); fell back to lexical "
+            f"containment={fallback:.3f}. This value is on the pre-v3 scale."
+        )
+        return fallback
+
+    score = max((_cosine(response_vector, v) for v in vectors), default=0.0)
+    score = round(max(0.0, min(1.0, score)), 4)
 
     logger.debug(
-        f"Grounding score: {score:.3f} "
-        f"({len(intersection)}/{len(response_words)} response words found "
-        f"in {len(context_words)} context words)"
+        f"Grounding score (semantic): {score:.3f} over {len(vectors)} chunk(s)"
     )
+    return score
 
-    return round(score, 4)
 
 
 def length_ok(

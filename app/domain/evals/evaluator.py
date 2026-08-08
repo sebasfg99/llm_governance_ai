@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from app.core.logging import get_logger
@@ -32,19 +33,24 @@ from app.domain.evals.llm_judge import judge_response
 # Grounding level below which we flag hallucination WITHOUT a judge verdict.
 #
 # This is a last-resort proxy, used only when the LLM judge failed outright.
-# RECALIBRATED for the containment formula: the previous value of 0.05 was
-# tuned for Jaccard, where scores were compressed toward zero by context
-# size. Under containment 0.05 means "almost no word of the response appears
-# in the context at all", which essentially never happens for Spanish prose
-# over a Spanish corpus — the check had become dead code.
 #
-# 0.30 flags the clearly-ungrounded cases from the calibration set (off-topic
-# 0.2105, invented regulation 0.2667) while staying below a legitimate
-# abstention (0.3750), because wrongly flagging hallucination is expensive:
-# the response guardrails rewrite the user-visible answer when it fires.
-# Deliberately more conservative than GROUNDING_THRESHOLD (0.40) — a coarse
+# RECALIBRATED for the v3 semantic grounding scale (2026-08). The old
+# 0.30 was tuned against lexical overlap values (off-topic 0.2105,
+# invented regulation 0.2667) that do not exist on this scale.
+#
+# Measured on the 5 off-topic control samples of the calibration set
+# (scripts/calibrate_grounding_metric.py), semantic scores ran
+# 0.11-0.24, mean 0.148. 0.35 sits clearly above that ceiling, so
+# genuinely off-topic output is still caught, while a real answer —
+# even one resting on English sources, which averages 0.638 — is far
+# from being flagged.
+#
+# Deliberately BELOW the main gate (GROUNDING_THRESHOLD = 0.62): this
+# is a floor detector, not the gate. It only fires when the LLM judge
+# failed to run, and a false positive here is expensive — the response
+# guardrails annotate the user-visible answer when it does. A coarse
 # proxy should under-flag, not over-flag.
-_HALLUCINATION_FALLBACK_GROUNDING = 0.30
+_HALLUCINATION_FALLBACK_GROUNDING = 0.35
 
 logger = get_logger(__name__)
 
@@ -95,7 +101,17 @@ def evaluate_response(
     chunk_texts = _extract_chunk_texts(chunks)
 
     # ---- Heuristic baselines (always computed) ----
+    # grounding_score is no longer free: since v3 it embeds the response
+    # (and the chunks, unless they are already cached). Timed separately
+    # from the rest so a latency regression can be attributed without
+    # guessing. DEBUG level — useful when investigating, silent in
+    # normal operation.
+    _grounding_started = time.perf_counter()
     grounding = graders.grounding_score(response, chunk_texts)
+    logger.debug(
+        f"grounding evaluation: {(time.perf_counter() - _grounding_started) * 1000:.0f}ms "
+        f"({len(chunk_texts)} chunk(s))"
+    )
     precision = graders.retrieval_precision(chunks)
     cit_score = graders.citation_score(response, citations, chunks)
     completeness = graders.completeness_score(query, response, chunks)
