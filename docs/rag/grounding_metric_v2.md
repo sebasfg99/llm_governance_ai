@@ -235,18 +235,63 @@ store separate vectors). Roadmap, not scheduled.
   **one chunk in the entire corpus** of the requested document carries that
   flag.
 
-**Root cause:** PCI DSS dominates Seguridad retrieval by sheer size — 533
-chunks against 165 for OWASP and 109 for MITRE. The same pattern shows up in
-Q1, Q2 and Q3.
+**Root cause — a calibration bug in the reranker.** Confirmed by direct
+measurement (`scripts/diagnose_retrieval_owasp.py`), not inferred.
 
-**This is NOT a structural weakness of the metric.** An earlier version of
-this document claimed a list of standard titles was "semantically diffuse".
-The real problem is that grounding cannot evaluate what retrieval never
-returned.
+`rerank_chunks()` in `app/domain/retrieval/ranking.py` fuses four features
+with nominal weights that assume comparable scales. They are not comparable.
+Measured over the 46-candidate pool for this query:
 
-**Fix required:** per-framework retrieval balancing, plus a more aggressive
-`is_reference_list` backfill on the OWASP documents that are bibliographies by
-nature. Separate work.
+| feature | observed range | nominal weight | **effective influence** |
+|---|---|---|---|
+| `section_priority` | 0.00 – 1.00 | 0.10 | **0.100** ← largest |
+| `similarity` | 0.446 – 0.591 | 0.55 | **0.080** |
+| `length_quality` | 0.40 – 1.00 | 0.05 | 0.030 |
+| `keyword_overlap` | 0.000 – 0.025 | 0.30 | **0.008** ← inert |
+
+The order of real influence is the inverse of the intended one. Cosine
+similarity from `text-embedding-3-small` is compressed into a narrow band
+(0.145 wide here), while `section_priority` uses its full 0–1 range. Without
+normalisation, the feature declared as a minor nudge outranks the one declared
+as dominant, and `weight_section` behaves as a sort key rather than a
+tie-breaker.
+
+`_section_priority()` returns 1.0 when the chunk has a structured
+`section_ref` (legal markers: "Artículo", "Anexo", "Cláusula"), 0.5 when the
+content merely mentions an authority word, 0.0 otherwise. That is a property
+of the **document type**, not of relevance to the query. Coverage is
+effectively binary per document: PCI-DSS 99%, CONASSIF 99%, SAFEAI 98% versus
+OWASP-GenAI 0%, Agentic-AI-Threats 0%.
+
+**Evidence:** in the 46-candidate pool, the best OWASP-GenAI chunk scores
+similarity **0.585 — 2nd best in the whole pool** — but lands at position
+**24** of the fused ranking because `section_priority=0.00`. PCI-DSS chunks
+scoring 0.523, ten points lower, rise to position **1** on
+`section_priority=1.00`. Positions 1–21 of the fused ranking all have
+`section_priority ≥ 0.50`; the first chunk without it sits at position 23 and
+is the pool's **top hit by similarity**.
+
+**This is NOT a corpus-volume problem.** An earlier version of this document
+claimed "PCI DSS dominates by sheer size — 533 chunks against 165 for OWASP".
+The pool says the opposite: **PCI contributes 13 candidates, OWASP 23**. OWASP
+has more representation, not less. It loses in the rerank, not in retrieval.
+
+(An earlier version before that claimed a list of standard titles was
+"semantically diffuse". Also wrong — grounding cannot evaluate what retrieval
+never returned.)
+
+**Why Normativa never exposed this:** that corpus has near-universal
+`section_ref` coverage, so the bonus is uniform across candidates and does not
+distort their relative order. The bias only appears when documents with and
+without legal structure compete — precisely the Seguridad case.
+
+**Fix proposed:** normalise features before applying weights. Simulated in
+`scripts/simulate_ranking_normalization.py`; implementation is separate work.
+
+A second, independent obstacle remains for this query: the only chunk of the
+requested document flagged `is_reference_list` (#69) scores 0.4457 against a
+pool cutoff of 0.4458 — it misses the candidate pool by 0.0001. Fixing the
+reranker surfaces OWASP content but not the bibliography chunk itself.
 
 ---
 
@@ -265,8 +310,9 @@ were initially misattributed to this metric.
 
 **It does not fix:**
 
-- **Retrieval contaminated by a dominant document.** Q5 fails for this
-  reason: PCI DSS crowds out the document the question named.
+- **A calibration bug in the reranker.** Q5 fails for this reason: an
+  unnormalised `section_priority` outweighs similarity, so documents without
+  legal section markers lose regardless of relevance. See the Q5 section.
 - **Residual cross-lingual distance on technical concepts.** Q2 fails for this
   reason: the right evidence is retrieved, in English, and the translated
   answer lands just under the gate.
