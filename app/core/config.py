@@ -69,6 +69,23 @@ class Settings(BaseSettings):
     # Gemini: gemini-1.5-pro, gemini-1.5-flash, gemini-2.0-flash
     llm_default_model: str = "gpt-4o-mini"
 
+    # Sampling temperature for ANSWER generation (not for the evaluator —
+    # the LLM judge is pinned at 0.0 in llm_judge.py).
+    #
+    # WHY THIS IS A SETTING:
+    # End-to-end validation was not reproducible: the same prompt and the
+    # same corpus produced 4/4, 3/4 and 2/4 across consecutive runs. The
+    # judge was not the cause — it is already deterministic. The variance
+    # came from here: at 0.2 the answer differs between runs, so the judge
+    # is handed different claims each time and returns a different verdict.
+    #
+    # Expected input:  float 0.0 - 1.0, read from LLM_TEMPERATURE.
+    # Default 0.2:     unchanged production behaviour.
+    # Set 0.0:         for reproducible validation runs and A/B comparisons
+    #                  of a prompt change, where run-to-run noise would
+    #                  otherwise be mistaken for an effect.
+    llm_temperature: float = 0.2
+
     # ----------------------------------------------------------
     # LLM fallback (resilience)
     # When the default provider fails with an upstream error

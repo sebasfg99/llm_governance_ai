@@ -73,7 +73,10 @@ class OpenAIClient:
         self,
         prompt: str,
         model: str | None = None,
-        temperature: float = 0.2,
+        # None -> settings.llm_temperature (0.2 by default, so behaviour is
+        # unchanged). Set LLM_TEMPERATURE=0 for reproducible validation runs;
+        # see the setting for why that matters.
+        temperature: float | None = None,
         max_tokens: int = 2048,
     ) -> tuple[str, int, int | None, int | None]:
         """
@@ -94,6 +97,8 @@ class OpenAIClient:
             UpstreamError: If the OpenAI API call fails.
         """
         model = model or settings.llm_default_model
+        if temperature is None:
+            temperature = settings.llm_temperature
 
         logger.debug(f"Calling OpenAI model={model}, temperature={temperature}")
 
