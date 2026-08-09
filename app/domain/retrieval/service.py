@@ -675,6 +675,7 @@ class RetrievalService:
                 section_ref=row.get("section_ref"),
                 industry_codes=row.get("industry_codes"),
                 is_reference_list=bool(row.get("is_reference_list") or False),
+                is_front_matter=bool(row.get("is_front_matter") or False),
             )
             for row in (result.data or [])
         ]
@@ -763,6 +764,7 @@ class RetrievalService:
                 section_ref=row.get("section_ref"),
                 industry_codes=row.get("industry_codes"),
                 is_reference_list=bool(row.get("is_reference_list") or False),
+                is_front_matter=bool(row.get("is_front_matter") or False),
             )
             for row in (result.data or [])
         ]

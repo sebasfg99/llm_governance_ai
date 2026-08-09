@@ -58,6 +58,11 @@ class ChunkResult:
                         rather than substantive content. Set at chunking time;
                         rerank_chunks() demotes these unless the query is
                         itself asking about references.
+        is_front_matter: True when the chunk lies entirely before the
+                        document's body (cover, TOC, copyright, credits).
+                        Set at chunking time via a hard boundary cut.
+                        Data plumbing only for now — no scoring consumes
+                        it until the reranker change is approved.
     """
     chunk_id: str
     document_id: str
@@ -68,6 +73,7 @@ class ChunkResult:
     section_ref: str | None = None
     industry_codes: list[str] | None = None
     is_reference_list: bool = False
+    is_front_matter: bool = False
 
 
 # ============================================================

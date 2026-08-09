@@ -205,7 +205,8 @@ def service_factory(monkeypatch):
             "app.domain.documents.service.chunk_text_with_sections",
             lambda text: [
                 type("C", (), {"content": f"nuevo {i}", "section_ref": None,
-                               "is_reference_list": False})()
+                               "is_reference_list": False,
+                               "is_front_matter": False})()
                 for i in range(n_chunks)
             ],
         )

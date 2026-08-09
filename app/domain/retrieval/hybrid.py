@@ -157,6 +157,7 @@ def reciprocal_rank_fusion(
             # only stage that can see the query and therefore tell a
             # question about references from a question about content.
             is_reference_list=bool(row.get("is_reference_list") or False),
+            is_front_matter=bool(row.get("is_front_matter") or False),
         )
         enriched.append((score, chunk))
 

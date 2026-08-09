@@ -35,6 +35,7 @@ from typing import NamedTuple
 
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.domain.documents.front_matter import find_body_start
 from app.domain.documents.reference_sections import (
     ReferenceRegionClassifier,
     find_reference_headings,
@@ -94,6 +95,12 @@ class ChunkWithSection(NamedTuple):
     # Consumed by rerank_chunks(), which demotes these chunks so they
     # stop outranking the content that actually answers a question.
     is_reference_list: bool = False
+    # True when the chunk lies entirely before the document's body-start
+    # boundary (cover, table of contents, copyright, committee credits).
+    # Correct by construction: the chunker forces a hard cut at the
+    # boundary, so no chunk mixes front matter with body text. False when
+    # no boundary was detected — the safe, pre-existing behaviour.
+    is_front_matter: bool = False
 
 
 # ------------------------------------------------------------
@@ -190,6 +197,26 @@ def chunk_text_with_sections(
         _project_offsets_to_word_indices(find_reference_headings(text), word_offsets)
     )
 
+    # Front-matter boundary, projected onto the same word-index space.
+    # Like the bibliography headings, this MUST be computed on the raw
+    # text: the body-start heading is only recognisable by the line it
+    # occupies alone, and " ".join(words) destroys that evidence.
+    #
+    # The boundary is enforced as a HARD cut below — no chunk may
+    # straddle it. Without the cut, the sliding window solders the last
+    # line of the credits to the first paragraph of the introduction,
+    # producing chunks that no classifier can label correctly (measured:
+    # an LLM classifier scored 29/35 on such mixed chunks, and the
+    # misses were exactly the chunks that caused a ranking regression).
+    body_start_word: int | None = None
+    body_start_offset = find_body_start(text)
+    if body_start_offset is not None:
+        projected = _project_offsets_to_word_indices(
+            [body_start_offset], word_offsets
+        )
+        if projected and 0 < projected[0] < len(word_offsets):
+            body_start_word = projected[0]
+
     total_words = len(word_offsets)
     logger.debug(
         f"Chunking {total_words} words with size={chunk_size}, "
@@ -220,6 +247,16 @@ def chunk_text_with_sections(
         )
         end = snap_end if snap_end is not None else target_end
 
+        # Hard front-matter cut. Unlike the section snap (a preference
+        # with a tolerance), this boundary is mandatory and overrides
+        # it: a chunk that mixes committee credits with the opening of
+        # the introduction is wrong no matter how it is labelled, so no
+        # chunk may straddle the boundary regardless of size.
+        cut_at_body = False
+        if body_start_word is not None and start < body_start_word < end:
+            end = body_start_word
+            cut_at_body = True
+
         # Materialise the chunk text from the word slice.
         words_slice = [w for _, w in word_offsets[start:end]]
         if words_slice:
@@ -237,27 +274,37 @@ def chunk_text_with_sections(
                     content=content,
                     section_ref=section_ref,
                     is_reference_list=is_reference_list,
+                    # Correct by construction thanks to the hard cut:
+                    # every chunk ends at or before the boundary, or
+                    # starts at or after it — never both sides.
+                    is_front_matter=(
+                        body_start_word is not None
+                        and end <= body_start_word
+                    ),
                 )
             )
 
         if end >= total_words:
             break
 
-        # Advance the window. When we snapped to a section boundary,
-        # start the next chunk at the marker (no overlap into a new
-        # section — overlapping into a new article would muddy
-        # section_ref attribution). Otherwise, keep the configured
-        # overlap as before.
-        if snap_end is not None and snap_end != target_end:
+        # Advance the window. When we snapped to a section boundary or
+        # cut at the front-matter boundary, start the next chunk exactly
+        # at the cut (no overlap backwards — overlapping into a new
+        # article would muddy section_ref attribution, and overlapping
+        # into front matter would re-solder what the cut separated).
+        # Otherwise, keep the configured overlap as before.
+        if cut_at_body or (snap_end is not None and snap_end != target_end):
             start = end
         else:
             start = end - chunk_overlap if end - chunk_overlap > start else end
 
     reference_chunks = sum(1 for c in chunks if c.is_reference_list)
+    front_matter_chunks = sum(1 for c in chunks if c.is_front_matter)
     logger.debug(
         f"Chunking complete: {total_words} words -> {len(chunks)} chunks "
         f"(avg {total_words // max(len(chunks), 1)} words/chunk, "
-        f"{reference_chunks} flagged as reference lists)"
+        f"{reference_chunks} flagged as reference lists, "
+        f"{front_matter_chunks} as front matter)"
     )
 
     return chunks

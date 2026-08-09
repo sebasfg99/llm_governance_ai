@@ -395,6 +395,11 @@ class DocumentService:
                     # heading still exists. Demoted at rerank time, never
                     # excluded — see migration 011.
                     "is_reference_list": chunk.is_reference_list,
+                    # Same rationale, for covers / TOCs / credits: the
+                    # body-start boundary is only detectable in the raw
+                    # text, and the chunker cuts hard at it so this flag
+                    # is exact. See migration 012.
+                    "is_front_matter": chunk.is_front_matter,
                     "embedding": embedding,
                     "country": doc.country,
                     "framework": doc.framework,
