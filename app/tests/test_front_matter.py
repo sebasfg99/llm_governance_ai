@@ -80,7 +80,6 @@ class TestFindBodyStart:
             "Executive Summary",
             "Resumen Ejecutivo",
             "1 OBJETO Y CAMPO DE APLICACIÓN",
-            "Overview",
             "1 Scope",
         ],
     )
@@ -140,6 +139,30 @@ class TestFindBodyStart:
         Expected output: None rather than a zero-width boundary.
         """
         text = "Introduction\n" + "Body text follows here with details. " * 200
+        assert find_body_start(text) is None
+
+    def test_interior_overview_is_not_a_boundary(self):
+        """
+        Expected input:  'Overview' as a recurring section heading inside
+                         real content — the PCI DSS shape, where the first
+                         interior Overview fell at 11.2% of the document
+                         and would have flagged ~48 requirement chunks.
+        Expected output: None. 'Overview' was removed from the pattern
+                         list for exactly this document; this test keeps
+                         it from being re-added without hitting the
+                         measured counterexample.
+        """
+        requirements = (
+            "Requirement 1: Install and maintain network security controls. "
+            * 40
+        )
+        text = (
+            _FRONT
+            + requirements
+            + "\nOverview\n"
+            + "Network security controls such as firewalls enforce policy. "
+            * 40
+        )
         assert find_body_start(text) is None
 
     def test_earliest_heading_wins(self):

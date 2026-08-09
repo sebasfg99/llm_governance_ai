@@ -61,10 +61,20 @@ import re
 # editorial material about the issuing body (INTECO's self-description),
 # not document content — it belongs to the front matter it introduces.
 #
-# "Overview" and "Scope" are generic words; they are safe here only
-# because the search takes the EARLIEST match and caps it to the first
+# "Scope" is a generic word; it is safe here only because the search
+# takes the EARLIEST match and caps it to the first
 # MAX_BODY_START_FRACTION of the document, so a mid-document
-# subsection heading never wins over a real front-matter boundary.
+# subsection heading rarely wins over a real front-matter boundary.
+#
+# "Overview" was tried and REMOVED after the corpus-wide dry run:
+# PCI DSS uses "Overview" as a RECURRING heading inside every
+# requirement, and the first one fell at 11.2% of the document —
+# inside the window — which would have flagged ~48 chunks of real
+# requirements as front matter. Cost of removal: the one document
+# whose body starts at a bare "Overview" (the LLM security checklist)
+# is no longer detected and keeps its revision-history/TOC chunks
+# unflagged. Under-flagging one small document beats over-flagging
+# requirements, per this module's design rule.
 _BODY_START_RE = re.compile(
     r"(?m)^[ \t]*(?:"
     r"(?:0\.?[ \t]+)?INTRODUCCI[ÓO]N"
@@ -73,7 +83,6 @@ _BODY_START_RE = re.compile(
     r"|Resumen[ \t]+Ejecutivo"
     r"|(?:1\.?[ \t]+)?Objeto[ \t]+y[ \t]+campo[ \t]+de[ \t]+aplicaci[óo]n"
     r"|(?:1\.?[ \t]+)?Scope"
-    r"|Overview"
     r")[ \t]*$",
     re.IGNORECASE,
 )
