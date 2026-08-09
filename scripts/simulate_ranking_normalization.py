@@ -213,6 +213,67 @@ def score_strategy_c(f, mult: float = 1.0) -> float:
     ) * mult
 
 
+def dedup_contiguous(chunks, max_gap: int = 1):
+    """
+    Drop a chunk when an already-selected one comes from the same
+    document and sits within `max_gap` positions of it.
+
+    MEASURED AND REJECTED — kept as the record of why.
+
+    The hypothesis: adjacent chunks of one PDF share an overlapping text
+    window, so an embedding artefact on one drags its neighbour in.
+    It came from SEG Q3, where LLM_AI_Checklist #27 and #28 took the top
+    two slots under Strategy B and #27 is about an unrelated tool
+    (Defect Dojo), i.e. a genuine false positive riding on its
+    neighbour.
+
+    What the measurement showed:
+
+      - Contiguous pairs are UBIQUITOUS, not a Q3 quirk: 8-23 pairs per
+        candidate pool, and 6 of the 8 measured queries carry exactly
+        one contiguous pair inside the top-5.
+      - The dedup does fix Q3: it removes #27 and lifts SAFEAI from
+        positions 3-5 to 2-4.
+      - But it degrades three others, invisibly to the framework check
+        (which stays True everywhere):
+            SEG Q5  loses OWASP-GenAI #3 -> 1 chunk of the REQUESTED
+                    document instead of 2
+            NRM Q1  loses ISO #20        -> 2 ISO chunks instead of 3
+            NRM Q2  loses ISO #56        -> 2 ISO chunks instead of 3
+
+    Why it does not generalise: the chunker uses a sliding window WITH
+    overlap (settings.chunk_overlap), so two consecutive chunks
+    legitimately cover one continuous passage. Contiguity is therefore
+    not evidence of an artefact, and dropping the neighbour discards
+    real evidence more often than noise. Q3 was a coincidence — there
+    #27 and #28 happen to discuss different things.
+
+    Left in the script so the measurement is reproducible and the
+    hypothesis is not re-proposed from scratch.
+    """
+    kept = []
+    for c in chunks:
+        clash = any(
+            k.document_id == c.document_id
+            and abs(k.chunk_index - c.chunk_index) <= max_gap
+            for k in kept
+        )
+        if not clash:
+            kept.append(c)
+    return kept
+
+
+def contiguous_pairs(chunks) -> list[tuple]:
+    """Pairs of same-document chunks within 1 index of each other."""
+    pairs = []
+    for i, a in enumerate(chunks):
+        for b in chunks[i + 1:]:
+            if (a.document_id == b.document_id
+                    and abs(a.chunk_index - b.chunk_index) <= 1):
+                pairs.append((a, b))
+    return pairs
+
+
 def build_pool(svc, case: Case, candidate_k: int):
     """Replay the production candidate-pool construction."""
     topic = _extract_search_topic(case.query)
