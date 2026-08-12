@@ -60,3 +60,6 @@ postgres_data/
 # --- e2e validator output logs ---
 validation_output.log
 validation_result.txt
+
+# --- Pre-reprocess corpus snapshots ---
+backup_chunks_pre_frontmatter_*.jsonl
