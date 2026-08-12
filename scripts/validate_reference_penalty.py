@@ -21,7 +21,9 @@
 # is precisely what the migration will change.
 #
 # Checks:
-#   1. Classification — idx 69/70 flagged, 64/56 not.
+#   1. Classification — idx 70 flagged, 64/56/68 not.
+#      (was 69/70 before the migration-012 reprocess re-cut
+#      every boundary in ISO 42001)
 #   2. Case A — does the substantive chunk displace the
 #      bibliography in the top-k?
 #   3. Control — does a question ABOUT the references still
@@ -176,7 +178,17 @@ def main() -> None:
     # ---------- 1. Classification ----------
     _print("1. Classification of the labelled ISO 42001 chunks")
     flags = load_flags(db)
-    expected = {69: True, 70: True, 64: False, 56: False, 68: False}
+    # Labelled by reading the chunks, and RE-LABELLED after the
+    # front-matter reprocess (migration 012) moved every boundary in
+    # this document. The previous set was {69: True, 70: True, 64:
+    # False, 56: False, 68: False}; #69 is now substantive prose and
+    # only #70 carries the bibliography, which is a precision
+    # improvement — the old #69 was a carry-forward false positive.
+    #
+    # If this assertion fails after a reprocess, re-derive the set
+    # rather than editing it to match: the point is to catch the
+    # classifier drifting, and a hand-tuned expectation cannot.
+    expected = {70: True, 64: False, 56: False, 68: False}
     ok = True
     print(f"\n  {'idx':>4}  {'expected':>9}  {'actual':>7}  verdict")
     for idx, want in sorted(expected.items()):

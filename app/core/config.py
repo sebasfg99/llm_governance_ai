@@ -234,6 +234,38 @@ class Settings(BaseSettings):
     #                  genuinely nothing else is relevant.
     retrieval_reference_penalty: float = 0.25
 
+    # Multiplier applied to the fused rerank score of chunks flagged
+    # is_front_matter (covers, tables of contents, copyright notices,
+    # committee credit lists). Same mechanism as the reference penalty
+    # above, and for a related reason.
+    #
+    # WHY THIS EXISTS: front matter shares no substance with user
+    # questions but collides with them lexically. Measured case: the
+    # ISO 42001 committee list — a table of Costa Rican universities —
+    # outranked real content for "¿Qué normativa de gobernanza de IA
+    # aplica en Costa Rica?", and the judge flagged the resulting answer
+    # as hallucinated.
+    #
+    # WHY DEMOTE RATHER THAN DROP: "¿quién participó en el comité
+    # técnico de la norma?" is a legitimate question whose answer IS
+    # the credits list. Unlike the reference penalty there is no
+    # query-pattern waiver yet — front-matter questions are rare enough
+    # that none appeared in the validation sets, so adding a waiver now
+    # would be untested machinery.
+    #
+    # Expected input:  float in 0.0 - 1.0, read from
+    #                  RETRIEVAL_FRONT_MATTER_PENALTY. 1.0 disables it.
+    # Default 0.25:    same factor as the reference penalty. Simulated
+    #                  over 8 validation queries: it removes every
+    #                  front-matter chunk from the top-5 (including the
+    #                  ISO 42001 cover and copyright chunks that blocked
+    #                  the reranker normalisation) without displacing
+    #                  any substantive chunk.
+    #
+    # Only effective on chunks whose document has been processed since
+    # migration 012 — everything else has is_front_matter = FALSE.
+    retrieval_front_matter_penalty: float = 0.25
+
     # Cross-lingual query expansion. When True, every user query is translated
     # into both Spanish and English (one gpt-4o-mini call, ~$0.0001 per query)
     # and the vector search runs with both variants. Results are merged by

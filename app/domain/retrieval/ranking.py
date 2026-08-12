@@ -90,14 +90,77 @@ class ChunkResult:
 #     overlap with the query, section markers, content length
 #
 # The fused score is:
-#   0.55 * similarity
-# + 0.30 * keyword_overlap(query, chunk)
-# + 0.10 * section_priority
-# + 0.05 * length_quality
+#   0.55 * similarity        / 0.15
+# + 0.30 * keyword_overlap   / 0.03
+# + 0.10 * section_priority  / 1.00
+# + 0.05 * length_quality    / 0.60
+#
+# WHY EACH FEATURE IS DIVIDED BY A SPAN (added 2026-08):
+# The weights above were written as if the four features moved over
+# comparable ranges. They do not, and without the division the
+# ORDER OF REAL INFLUENCE IS THE INVERSE OF THE INTENDED ONE.
+# Measured over a real 46-candidate pool:
+#
+#   feature            observed range   weight   effective influence
+#   section_priority   0.00 - 1.00       0.10    0.100   <- largest
+#   similarity         0.446 - 0.591     0.55    0.080
+#   length_quality     0.40 - 1.00       0.05    0.030
+#   keyword_overlap    0.000 - 0.025     0.30    0.008   <- inert
+#
+# Cosine similarity from text-embedding-3-small is compressed into a
+# narrow band while section_priority uses its full 0-1 range, so a
+# nominal 0.10 weight was acting as the sort key and the nominal 0.55
+# one as a tie-breaker.
+#
+# section_priority is 1.0 when a chunk carries a structured
+# section_ref — a property of the DOCUMENT TYPE (legal markers like
+# "Artículo", "Anexo"), not of relevance to the query. Coverage is
+# effectively binary per document: PCI-DSS 99%, CONASSIF 99% versus
+# OWASP-GenAI 0%, Agentic-AI 0%. So regulatory documents outranked
+# technical guides regardless of how well they matched. Concretely:
+# the best OWASP chunk for a question about an OWASP guide ranked 2nd
+# of 46 by similarity (0.585) and fell to position 24 after reranking,
+# while PCI chunks ten points lower (0.523) rose to position 1.
+#
+# THE FIRST ATTEMPT AT THIS FAILED, and the reason is why
+# is_front_matter exists. Normalising alone regressed the Normativa
+# validator from 4/4 to 2/4: section_priority had been doing a SECOND
+# job by accident — suppressing covers, tables of contents and credit
+# lists, which carry no section markers either. Removing the bias
+# removed that suppression too, and ISO 42001's copyright notice and
+# committee list surfaced into answer contexts. The front-matter
+# penalty below replaces that accidental filter with an explicit one,
+# so the two concerns are separable.
+#
+# Chosen over min-max scaling inside the candidate pool, which made a
+# chunk's score depend on which other candidates happened to be
+# retrieved — impossible to reason about from a production trace, and
+# sensitive to a single outlier. Both were simulated over 8 queries
+# first; see scripts/simulate_ranking_normalization.py.
+#
+# The score is no longer bounded to 0-1. Nothing reads its absolute
+# value: rerank_chunks only ORDERS, and the similarity threshold
+# downstream filters on chunk.similarity, not on this score.
 #
 # Tunable in one place. Cross-encoder remains a future option.
 # ============================================================
 import re
+
+# ------------------------------------------------------------
+# Feature spans, used to put the four features on a common scale.
+#
+# Each is the range that feature actually covers among retrieved
+# candidates, measured across 8 query pools. They are NOT theoretical
+# maxima: similarity could in principle span 0-1, but never does among
+# candidates that already passed vector search.
+#
+# If the embedding model changes, _SPAN_SIMILARITY must be re-measured
+# — a different model compresses cosine differently.
+# ------------------------------------------------------------
+_SPAN_SIMILARITY = 0.15   # cosine band actually seen among candidates
+_SPAN_OVERLAP = 0.03      # Jaccard of a short query against a long chunk
+_SPAN_SECTION = 1.00      # discrete 0.0 / 0.5 / 1.0
+_SPAN_LENGTH = 0.60       # 0.40 - 1.00 in practice
 
 # Stop words removed before computing keyword overlap. The list
 # covers common Spanish + English fillers so overlap reflects
@@ -219,6 +282,7 @@ def rerank_chunks(
     weight_section: float = 0.10,
     weight_length: float = 0.05,
     reference_penalty: float | None = None,
+    front_matter_penalty: float | None = None,
 ) -> list[ChunkResult]:
     """
     Re-rank chunks by combining multiple features.
@@ -239,6 +303,15 @@ def rerank_chunks(
                            to settings.retrieval_reference_penalty.
                            Waived (treated as 1.0) when the query is
                            itself asking about references.
+        front_matter_penalty:
+                           Multiplier applied to the fused score of
+                           chunks flagged is_front_matter (cover, TOC,
+                           copyright, credits). Defaults to
+                           settings.retrieval_front_matter_penalty.
+                           No query-pattern waiver: unlike references,
+                           no front-matter question appeared in the
+                           validation sets, so a waiver would be
+                           untested machinery.
 
     Returns:
         Re-ranked list (highest fused score first).
@@ -264,19 +337,26 @@ def rerank_chunks(
         # bibliography IS the answer. Compete on merit.
         reference_penalty = 1.0
 
+    if front_matter_penalty is None:
+        front_matter_penalty = settings.retrieval_front_matter_penalty
+
     enriched: list[tuple[float, ChunkResult]] = []
     penalised = 0
+    front_matter_demoted = 0
     for chunk in chunks:
         sim = float(chunk.similarity or 0.0)
         overlap = _keyword_overlap(query_tokens, chunk.content or "")
         section = _section_priority(chunk.section_ref, chunk.content or "")
         length = _length_quality(chunk.content or "")
 
+        # Each feature is divided by its typical span before the weight
+        # is applied, so the weights mean what they say. See the module
+        # header for the measurement that made this necessary.
         score = (
-            weight_similarity * sim
-            + weight_overlap * overlap
-            + weight_section * section
-            + weight_length * length
+            weight_similarity * (sim / _SPAN_SIMILARITY)
+            + weight_overlap * (overlap / _SPAN_OVERLAP)
+            + weight_section * (section / _SPAN_SECTION)
+            + weight_length * (length / _SPAN_LENGTH)
         )
 
         # Applied to the FUSED score, not to similarity alone, so a
@@ -286,6 +366,14 @@ def rerank_chunks(
         if chunk.is_reference_list and reference_penalty != 1.0:
             score *= reference_penalty
             penalised += 1
+
+        # Same reasoning for front matter, and it is what makes the
+        # span normalisation above safe: normalising alone let covers
+        # and credit lists surface, because section_priority had been
+        # suppressing them by accident.
+        if chunk.is_front_matter and front_matter_penalty != 1.0:
+            score *= front_matter_penalty
+            front_matter_demoted += 1
 
         enriched.append((score, chunk))
 
@@ -300,6 +388,11 @@ def rerank_chunks(
         logger.debug(
             f"Demoted {penalised} reference-list chunk(s) by "
             f"x{reference_penalty}"
+        )
+    if front_matter_demoted:
+        logger.debug(
+            f"Demoted {front_matter_demoted} front-matter chunk(s) by "
+            f"x{front_matter_penalty}"
         )
     elif reference_query:
         # Worth its own line: it explains why a bibliography chunk is

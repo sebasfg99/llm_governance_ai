@@ -274,3 +274,103 @@ class TestChunkerFrontMatterCut:
         assert not any(
             c.is_front_matter and c.is_reference_list for c in chunks
         )
+
+
+# ============================================================
+# 3. The reranker demotion
+#
+# The chunker's flag is only half the fix. These pin the other half:
+# rerank_chunks() must actually act on it, because the span
+# normalisation added alongside it REMOVED the accidental suppression
+# that section_priority used to provide. Without this penalty,
+# normalising regressed the Normativa validator from 4/4 to 2/4 —
+# ISO 42001's copyright notice and cover surfaced into answer
+# contexts (simulated positions 2 and 1 respectively).
+# ============================================================
+from app.domain.retrieval.ranking import ChunkResult, rerank_chunks  # noqa: E402
+
+
+def _result(**overrides) -> ChunkResult:
+    defaults = dict(
+        chunk_id="c1",
+        document_id="d1",
+        tenant_id="global",
+        content=(
+            "La organización debe establecer un proceso de evaluación del "
+            "riesgo de la inteligencia artificial alineado con su política."
+        ),
+        chunk_index=0,
+        similarity=0.5,
+        section_ref="Articulo 6",
+        is_reference_list=False,
+        is_front_matter=False,
+    )
+    defaults.update(overrides)
+    return ChunkResult(**defaults)
+
+
+class TestFrontMatterDemotion:
+    def test_front_matter_loses_to_lower_similarity_content(self):
+        """
+        Expected input:  a front-matter chunk with HIGHER similarity than
+                         a substantive one — the measured shape, where
+                         ISO 42001's credits scored 0.615 against real
+                         content at 0.598.
+        Expected output: the substantive chunk ranks first anyway.
+        """
+        front = _result(chunk_id="fm", similarity=0.62, is_front_matter=True)
+        body = _result(chunk_id="body", similarity=0.58)
+
+        ranked = rerank_chunks("¿Qué normativa aplica en Costa Rica?", [front, body])
+
+        assert ranked[0].chunk_id == "body"
+        assert ranked[-1].chunk_id == "fm"
+
+    def test_unflagged_chunks_are_unaffected(self):
+        """
+        Expected input:  no chunk flagged — every row of a document not
+                         yet reprocessed since migration 012.
+        Expected output: ordering driven by the normal features, with the
+                         higher-similarity chunk first. The penalty must
+                         be inert on a corpus that has not been recut.
+        """
+        low = _result(chunk_id="low", similarity=0.40)
+        high = _result(chunk_id="high", similarity=0.80)
+
+        ranked = rerank_chunks("evaluación de riesgos", [low, high])
+
+        assert [c.chunk_id for c in ranked] == ["high", "low"]
+
+    def test_penalty_can_be_disabled(self):
+        """
+        Expected input:  front_matter_penalty=1.0.
+        Expected output: the flag stops mattering — the escape hatch for
+                         debugging a ranking without rebuilding anything.
+        """
+        front = _result(chunk_id="fm", similarity=0.62, is_front_matter=True)
+        body = _result(chunk_id="body", similarity=0.58)
+
+        ranked = rerank_chunks(
+            "¿Qué normativa aplica?", [front, body], front_matter_penalty=1.0
+        )
+
+        assert ranked[0].chunk_id == "fm"
+
+    def test_both_penalties_compound(self):
+        """
+        Expected input:  a chunk flagged BOTH front matter and reference
+                         list. The chunker cannot produce this (front
+                         matter is a prefix, bibliography a suffix), but
+                         a hand-written row or a future classifier could.
+        Expected output: it ranks last rather than the code picking one
+                         penalty and silently ignoring the other.
+        """
+        both = _result(
+            chunk_id="both", similarity=0.9,
+            is_front_matter=True, is_reference_list=True,
+        )
+        body = _result(chunk_id="body", similarity=0.5)
+
+        ranked = rerank_chunks("requisitos de gestión", [both, body])
+
+        assert ranked[-1].chunk_id == "both"
