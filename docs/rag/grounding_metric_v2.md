@@ -334,3 +334,66 @@ in with them.
 - `app/domain/evals/graders.py` — the implementation
 - `app/domain/evals/service.py` — `GROUNDING_THRESHOLD`, `EVALUATOR_VERSION`
 - `app/domain/evals/evaluator.py` — `_HALLUCINATION_FALLBACK_GROUNDING`
+
+---
+
+## Known debt: SAFEAI's bibliography lost its flag (2026-08)
+
+The migration-012 reprocess re-cut every boundary in the 7 documents
+with a detectable front-matter heading. `is_reference_list` is
+recomputed by the chunker on the new boundaries, and corpus-wide the
+count moved **21 → 19**:
+
+- **ISO 42001**: `#69` and `#70` → only `#70`. A *gain*: `#70` is the
+  bibliography, and the old `#69` was a carry-forward false positive
+  (substantive prose).
+- **SAFEAI**: `#108` → **none**. A genuine loss.
+
+### Mechanism
+
+`APPENDIX I. REFERENCES` is still detected in the raw text (offset
+207030, 99.1% of the document). But the +1 chunk shift left `#108`
+mostly occupied by `APPENDIX H. ACRONYMS`, with the references
+starting near its end:
+
+```
+#108  ...APPENDIX H. ACRONYMS AI Artificial Intelligence AIBOM ...
+      ... [6] The MITRE Corporation, "MITRE ATLAS," 20 12 2024.   <- tail
+#109  [Accessed 2 Jan 2025]. [5] NIST, "NIST Special Publication 800-30 R1"...
+```
+
+`#108` no longer clears the classifier's "≥60% of the chunk is
+post-heading" rule, so it is not flagged; `#109` carries no heading of
+its own and relies on carry-forward from `#108`, which never fired.
+The chain breaks.
+
+This is the SAME mixed-chunk problem that `is_front_matter` was built
+to solve, appearing at the bibliography boundary instead of the body
+boundary. The claim in `scripts/reprocess_front_matter.py` that
+"`is_reference_list` is recomputed on the new boundaries, so the flags
+stay correct automatically" was too optimistic and is disproved by
+this case.
+
+### The fix, not done here
+
+Apply the same treatment: a HARD chunk cut at the reference heading,
+mirroring `find_body_start`. `find_reference_headings()` already
+returns the offsets and `chunk_text_with_sections()` already projects
+them to word indices for the classifier — the missing piece is
+forcing a boundary there instead of only classifying across it. On
+cleanly cut chunks the flag becomes correct by construction, exactly
+as it now is for front matter.
+
+Not done in this cycle because it requires another corpus reprocess
+and a full validation pass, and the current state passes the agreed
+criterion (Normativa ≥4/4 in 2 of 3 runs). Scope when picked up:
+`chunking.py`, a reprocess of the affected documents, and re-running
+both e2e validators.
+
+### Impact while it stands
+
+One document's bibliography is unreachable for reference-seeking
+queries. It does not affect the Seguridad `Control bibliografía`
+query, which targets the OWASP guide (still flagged) — that query
+fails for a different reason: its flagged chunk sits 0.0001 below the
+candidate-pool cutoff.
