@@ -392,8 +392,26 @@ both e2e validators.
 
 ### Impact while it stands
 
-One document's bibliography is unreachable for reference-seeking
-queries. It does not affect the Seguridad `Control bibliografía`
-query, which targets the OWASP guide (still flagged) — that query
-fails for a different reason: its flagged chunk sits 0.0001 below the
-candidate-pool cutoff.
+The direction matters and an earlier draft of this section had it
+backwards. Losing the flag does not make the bibliography
+*unreachable* — it makes it **undemoted**. The penalty exists to stop
+a reference list from crowding out substantive content, so with no
+flag SAFEAI's citation list competes on equal terms with real
+content. That is the original bibliography failure mode, back in one
+document.
+
+Measured on three probe queries (2026-08-14):
+
+| query | `#109` in candidate pool | in top-5 |
+|---|---|---|
+| tácticas de MITRE ATLAS sobre model evasion | no | no |
+| controles del framework SAFE-AI de MITRE | **yes** | no |
+| protección contra ataques adversarios | no | no |
+
+So the chunk does reach the candidate pool, and nothing demotes it
+once there — it stayed out of the top-5 on merit, not by design. The
+exposure is latent rather than active.
+
+Unrelated to the Seguridad `Control bibliografía` query, which targets
+the OWASP guide (still flagged) and fails for a different reason: its
+flagged chunk sits 0.0001 below the candidate-pool cutoff.
