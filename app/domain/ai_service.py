@@ -118,6 +118,32 @@ def _looks_like_why_query(query: str) -> bool:
     return any(keyword in lowered for keyword in _WHY_KEYWORDS)
 
 
+def _parse_structured_citations(
+    response_text: str,
+    response_mode: str,
+) -> list | None:
+    """Extract structured citations without making parsing user-fatal."""
+    if response_mode != "structured":
+        return None
+
+    cleaned = response_text.strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+        if lines and lines[0].strip().lower() in {"```", "```json"}:
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        cleaned = "\n".join(lines).strip()
+
+    try:
+        payload = json.loads(cleaned)
+    except (TypeError, json.JSONDecodeError):
+        return None
+
+    citations = payload.get("citations") if isinstance(payload, dict) else None
+    return citations if isinstance(citations, list) else None
+
+
 # ------------------------------------------------------------
 # Use cases that expect a conversational experience. When one of
 # these is used without an explicit thread_id we auto-create a
@@ -635,12 +661,35 @@ class AIService:
         # the judge so it does not flag "should_have_said_idk" on every
         # conversational reply.
         run_judge = settings.eval_use_llm_judge and bool(prepared.retrieved_chunks)
+        parsed_citations = _parse_structured_citations(
+            response_text=response_text,
+            response_mode=request.response_mode,
+        )
+        valid_chunk_ids = {
+            str(chunk.chunk_id) for chunk in prepared.retrieved_chunks
+        }
+        invalid_citation_ids: list[str] = []
+        for citation in parsed_citations or []:
+            chunk_id = (
+                citation.get("chunk_id")
+                if isinstance(citation, dict)
+                else getattr(citation, "chunk_id", None)
+            )
+            if chunk_id is not None and str(chunk_id) not in valid_chunk_ids:
+                invalid_citation_ids.append(str(chunk_id))
+
+        if invalid_citation_ids:
+            logger.warning(
+                "Respuesta contiene citas fuera del contexto recuperado: "
+                f"{invalid_citation_ids}"
+            )
+
         try:
             evaluation = evaluate_response(
                 query=request.query,
                 chunks=prepared.retrieved_chunks,
                 response=response_text,
-                citations=None,
+                citations=parsed_citations or None,
                 instructions=None,
                 use_llm_judge=run_judge,
                 response_mode=request.response_mode,
@@ -696,6 +745,8 @@ class AIService:
             "guardrails": guardrails_result,
             "risk": risk,
             "safe_response": guardrails_result.get("safe_response") or response_text,
+            "parsed_citations": parsed_citations,
+            "invalid_citation_ids": invalid_citation_ids,
         }
 
     # ================================================================
@@ -794,6 +845,7 @@ class AIService:
                     response_mode=request.response_mode,
                     query=request.query,
                     chunks=retrieved_chunks,
+                    citations=(governance or {}).get("parsed_citations") or None,
                     instructions=None,
                     # The judge already ran in _run_governance_pipeline. Hand
                     # its verdict over so the persisted row carries the real
@@ -1102,7 +1154,7 @@ class AIService:
         if chunks:
             context_header = "\n\nDocumentos recuperados:\n" + "=" * 50
 
-            def _format_one(i: int, c) -> str:
+            def _format_one(c) -> str:
                 meta = doc_metadata.get(c.document_id) or {}
                 filename = meta.get("filename") or "documento desconocido"
                 framework = meta.get("framework")
@@ -1113,13 +1165,11 @@ class AIService:
                 section_part = f" | Section: {section_ref}" if section_ref else ""
                 fw_part = f" | Framework: {framework}" if framework else ""
                 return (
-                    f"[Chunk {i+1} | Fuente: {filename}{section_part}{fw_part} "
+                    f"[chunk_id={c.chunk_id} | Fuente: {filename}{section_part}{fw_part} "
                     f"| similarity: {c.similarity:.3f}]\n{c.content}"
                 )
 
-            chunk_texts = "\n\n".join(
-                _format_one(i, c) for i, c in enumerate(chunks)
-            )
+            chunk_texts = "\n\n".join(_format_one(c) for c in chunks)
             context_footer = "=" * 50
             parts.append(f"{context_header}\n{chunk_texts}\n{context_footer}")
         else:
