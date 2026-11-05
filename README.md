@@ -394,8 +394,11 @@ llm_ai_governance_project/
 │   ├── schemas/
 │   ├── db/migrations/
 │   └── tests/
-├── scripts/                     # seed_*, eval, export
-├── docs/                        # gitignored (local corpus + guides)
+├── scripts/
+│   ├── seed_prompts.py
+│   ├── seed_documents.py
+│   └── backfill_embeddings.py   # optional re-embed
+├── docs/admin/                  # gitignored — local RAG corpus (PDFs)
 ├── notebooks/
 │   └── ai_query_test.ipynb
 ├── README.md                    # English (default) ← you are here

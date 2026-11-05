@@ -493,18 +493,10 @@ llm_ai_governance_project/
 │   │   └── migrations/          # SQL versionados (001..004)
 │   └── tests/                   # pytest
 ├── scripts/
-│   ├── seed_documents.py        # Carga masiva docs/admin/
-│   ├── seed_prompts.py          # Carga prompts versionados
-│   ├── backfill_embeddings.py   # Re-genera embeddings
-│   └── export_finetune_data.py  # Exporta dataset desde traces
-├── docs/
-│   ├── admin/                   # Corpus normativo (no commiteable)
-│   ├── api/                     # Documentación de endpoints
-│   ├── rag/                     # Pipeline RAG en profundidad
-│   ├── decisions/               # ADRs y trade-offs
-│   ├── docker_deployment.md
-│   ├── testing.md
-│   └── project_structure.md
+│   ├── seed_documents.py        # Carga docs/admin/ → Supabase
+│   ├── seed_prompts.py          # System prompts versionados
+│   └── backfill_embeddings.py   # Re-genera embeddings (opcional)
+├── docs/admin/                  # gitignored — corpus RAG local (PDFs)
 ├── notebooks/
 │   └── ai_query_test.ipynb      # Demo: 5 queries ISO 42001
 ├── Dockerfile                   # Multi-stage: builder + runtime
@@ -515,8 +507,7 @@ llm_ai_governance_project/
 └── README.es.md                 # ← estás aquí
 ```
 
-En clones locales con carpeta `docs/` presente, el detalle está en
-`docs/project_structure.md` (esa carpeta **no se sube al remoto**; ver `.gitignore`).
+La carpeta `docs/` (corpus en `docs/admin/`) **no se sube al remoto**; ver `.gitignore`.
 
 ---
 

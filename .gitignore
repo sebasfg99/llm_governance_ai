@@ -80,5 +80,11 @@ Thumbs.db
 # --- Exports that may contain prompts or PII ---
 *.jsonl
 
+# --- Eval artifacts and presentations (not needed to run RAG) ---
+evals/
+datasets/
+*.pptx
+*.pptm
+
 # --- Docker local volumes ---
 postgres_data/
