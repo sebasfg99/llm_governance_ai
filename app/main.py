@@ -25,27 +25,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 # Import core error registration
-from app.core.config import settings
 from app.core.errors import register_error_handlers
-from app.core.logging import get_logger
-from app.db.supabase import get_supabase_client
 
-_logger = get_logger(__name__)
-
-# Import all API route modules
-from app.api.routes import (
-    ai,
-    documents,
-    evals,
-    feedback,
-    health,
-    metrics,
-    policies,
-    projects,
-    prompts,
-    risk,
-    threads,
-)
+# Demo portfolio surface: health + RAG query only (domain code remains in app/domain).
+from app.api.routes import ai, health
 
 # ============================================================
 # Create the FastAPI application instance
@@ -54,11 +37,10 @@ from app.api.routes import (
 # API docs at http://localhost:8000/docs
 # ============================================================
 app = FastAPI(
-    title="ai-core",
+    title="ai-core (RAG demo)",
     description=(
-        "Centralized AI engine for multi-tenant SaaS applications. "
-        "Provides document ingestion, RAG-based retrieval, LLM routing, "
-        "traceability, feedback collection, and evaluation."
+        "Portfolio demo: regulatory RAG over a seeded corpus via POST /ai/query. "
+        "Requires Supabase + OpenAI (.env) and one-time seed scripts."
     ),
     version="0.1.0",
     # Disable the /redoc endpoint if you only want /docs
@@ -98,106 +80,9 @@ register_error_handlers(app)
 # --- Health check: GET /health ---
 app.include_router(health.router, prefix="/health", tags=["Health"])
 
-
-# --- Readiness probe: GET /ready ---
-#
-# Cloud Run / Railway distinguish between two probe semantics:
-#   - liveness  (/health): "the process is up; do not restart me"
-#   - readiness (/ready):  "I can serve traffic now; route requests to me"
-#
-# Readiness must verify the dependencies the sidecar actually needs to
-# answer a request — the Supabase client and the configured OpenAI key.
-# We keep the check fast (< 100ms) so Cloud Run's default 1s probe
-# interval never blocks request routing. Failures return 503 so the
-# load balancer drains traffic until the dependency recovers.
-@app.get("/ready", tags=["Health"], summary="Readiness probe")
-def readiness_probe() -> JSONResponse:
-    """
-    Return 200 only when the sidecar can actually serve queries:
-      - Supabase client initialised
-      - OpenAI key configured (the primary LLM provider)
-      - Auth env vars present (either service-key or JWT secret)
-    Any failure returns 503 with the offending dependency.
-    """
-    problems: list[str] = []
-
-    try:
-        client = get_supabase_client()
-        if client is None:
-            problems.append("supabase_client_not_initialized")
-    except Exception as exc:  # noqa: BLE001 — probe must never crash
-        problems.append(f"supabase_init_failed:{type(exc).__name__}")
-
-    if not settings.openai_api_key:
-        problems.append("openai_api_key_missing")
-
-    if not settings.ai_core_service_key and not settings.supabase_jwt_secret:
-        # At least one auth path must be configured.
-        problems.append("auth_not_configured")
-
-    if problems:
-        return JSONResponse(
-            status_code=503,
-            content={"status": "not_ready", "problems": problems},
-        )
-
-    return JSONResponse(
-        status_code=200,
-        content={"status": "ready", "service": "ai-core"},
-    )
-
-# --- Documents: upload, process, list, get ---
-# POST /documents/upload
-# POST /documents/{id}/process
-# GET  /documents
-# GET  /documents/{id}
-app.include_router(documents.router, prefix="/documents", tags=["Documents"])
-
 # --- AI queries: the central RAG endpoint ---
 # POST /ai/query
 app.include_router(ai.router, prefix="/ai", tags=["AI"])
-
-# --- Prompt library: versioned system prompts ---
-# GET  /prompts
-# POST /prompts
-app.include_router(prompts.router, prefix="/prompts", tags=["Prompts"])
-
-# --- Feedback: user ratings on AI responses ---
-# POST /feedback
-app.include_router(feedback.router, prefix="/feedback", tags=["Feedback"])
-
-# --- Evaluations: automatic quality checks ---
-# GET /evals/{trace_id}
-app.include_router(evals.router, prefix="/evals", tags=["Evaluations"])
-
-# --- Projects: central "expediente" that risk, policies and chats attach to ---
-# GET    /projects
-# POST   /projects
-# GET    /projects/{id}
-# PATCH  /projects/{id}
-app.include_router(projects.router, prefix="/projects", tags=["Projects"])
-
-# --- Threads: conversation memory (L1) ---
-# GET  /threads                      list the caller's threads
-# POST /threads                      create an empty thread
-# GET  /threads/{id}                 get a single thread
-# GET  /threads/{id}/messages        replay messages in chronological order
-app.include_router(threads.router, prefix="/threads", tags=["Threads"])
-
-# --- Risk: intake interview (B2) + risk orchestrator (B3) ---
-# POST /risk/{project_id}/intake
-# POST /risk/{project_id}/analyze
-app.include_router(risk.router, prefix="/risk", tags=["Risk"])
-
-# --- Policies: policy generation (C1) + controls (C2) ---
-# POST /policies/generate
-# POST /policies/{project_id}/generate
-# POST /policies/{project_id}/controls
-app.include_router(policies.router, prefix="/policies", tags=["Policies"])
-
-# --- Metrics: aggregated RAG governance metrics ---
-# GET /metrics/rag
-app.include_router(metrics.router, prefix="/metrics", tags=["Metrics"])
 
 
 # ============================================================

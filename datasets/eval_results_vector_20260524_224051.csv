@@ -1,0 +1,7 @@
+trace_id,user_query,tenant_id,use_case,params_source,use_hybrid,retrieved_count,gold_relevant_count,precision_at_5,recall_at_10,ndcg_at_10,mrr
+AGGREGATE,n=5,,,,False,,,0.4800,0.6183,0.6787,0.8000
+9cbc05bc-3c05-444f-8965-a5fd5042274a,¿Qué dice ISO 42001 sobre el comité de gobernanza?,dev-tenant,chatbot,inferred_from_chunks,False,5,1,0.2000,1.0000,1.0000,1.0000
+daa2635d-4d64-4ac4-a7ae-b618173d8d34,"Necesito cumplir con la iso 42001, que evidencias tengo que generar?",dev-tenant,chatbot,inferred_from_chunks,False,5,5,0.8000,0.8000,0.8688,1.0000
+aea70abb-b346-4a89-bc8f-0fa64415cc58,¿Cuáles son los requisitos legales para usar IA en procesos de crédito?,dev-tenant,chatbot,inferred_from_chunks,False,5,1,0.0000,0.0000,0.0000,0.0000
+e29bc33c-ea17-4b33-916d-a450a14cc189,Explica en detalle los principios GOVERN y MAP del NIST AI RMF.,dev-tenant,chatbot,inferred_from_chunks,False,5,8,1.0000,0.6250,0.7592,1.0000
+4b59e756-20be-44d5-a2d2-a96de1ad42bc,What are the main requirements of ISO 42001 for AI governance?,dev-tenant,chatbot,inferred_from_chunks,False,5,3,0.4000,0.6667,0.7654,1.0000

@@ -505,3 +505,155 @@ class TestTokenLogging:
             response_mode="text",
         )
         assert _STRUCTURED_OUTPUT_INSTRUCTION.strip() not in prompt
+
+
+# ===========================================================
+# Phase 2 — _format_project_block (existing_vendor + notes)
+# ===========================================================
+
+
+class TestFormatProjectBlock:
+    """
+    Verify that _format_project_block correctly includes existing_vendor
+    and notes (with 800-char truncation) in the project context block.
+    """
+
+    def _make_project(
+        self,
+        existing_vendor: str | None = None,
+        notes: str | None = None,
+        country: str | None = "CR",
+    ):
+        """Build a minimal Project with a real ProjectProfile."""
+        from datetime import datetime
+        from uuid import UUID
+        from app.domain.projects.models import Project, ProjectProfile
+
+        profile = ProjectProfile(
+            project_name="Test Project",
+            country=country,
+            existing_vendor=existing_vendor,
+            notes=notes,
+        )
+        return Project(
+            id=UUID("00000000-0000-0000-0000-000000000001"),
+            tenant_id="acme",
+            name="Test Project",
+            project_profile=profile,
+            status="draft",
+            created_at=datetime(2025, 1, 1),
+            updated_at=datetime(2025, 1, 1),
+        )
+
+    def test_existing_vendor_appears_in_block(self):
+        """existing_vendor must be present in the formatted block."""
+        from app.domain.ai_service import AIService
+
+        project = self._make_project(existing_vendor="buró de crédito, score alternativo")
+        block = AIService._format_project_block(project)
+
+        assert "Proveedores externos" in block
+        assert "buró de crédito" in block
+
+    def test_notes_appears_in_block(self):
+        """notes must be present in the formatted block when provided."""
+        from app.domain.ai_service import AIService
+
+        project = self._make_project(notes="POL-IA-Credito-Consumo.pdf, equipo RACI aprobado.")
+        block = AIService._format_project_block(project)
+
+        assert "Notas del expediente" in block
+        assert "POL-IA-Credito-Consumo.pdf" in block
+
+    def test_notes_truncated_at_800_chars(self):
+        """Notes longer than 800 chars must be cut and suffixed with '…'."""
+        from app.domain.ai_service import AIService
+
+        long_notes = "A" * 1000
+        project = self._make_project(notes=long_notes)
+        block = AIService._format_project_block(project)
+
+        # Ellipsis must appear and the actual content must not exceed 800 + 1 chars
+        assert "…" in block
+        # Extract the notes portion
+        notes_start = block.index("Notas del expediente:\n") + len("Notas del expediente:\n")
+        notes_content = block[notes_start:].split("\n")[0]
+        assert len(notes_content) <= 801  # 800 chars + '…'
+
+    def test_block_unchanged_without_vendor_or_notes(self):
+        """When both fields are absent, the block must not contain those labels."""
+        from app.domain.ai_service import AIService
+
+        project = self._make_project(existing_vendor=None, notes=None)
+        block = AIService._format_project_block(project)
+
+        assert "Proveedores externos" not in block
+        assert "Notas del expediente" not in block
+
+    def test_both_fields_present_together(self):
+        """Both existing_vendor and notes can coexist in the same block."""
+        from app.domain.ai_service import AIService
+
+        project = self._make_project(
+            existing_vendor="BureauVendor S.A.",
+            notes="Archivo: POL-IA.pdf | RACI: producto, legal, datos.",
+        )
+        block = AIService._format_project_block(project)
+
+        assert "BureauVendor S.A." in block
+        assert "POL-IA.pdf" in block
+
+
+class TestEvidenceChecklistHint:
+    def test_evidence_query_with_project_includes_dynamic_hint(self):
+        from datetime import datetime
+        from uuid import UUID
+        from app.domain.ai_service import AIService
+        from app.domain.projects.models import Project, ProjectProfile
+
+        project = Project(
+            id=UUID("00000000-0000-0000-0000-000000000001"),
+            tenant_id="acme",
+            name="Motor de Preaprobación",
+            project_profile=ProjectProfile(
+                project_name="Motor de Preaprobación",
+                ai_type="classification",
+                data_used=["pii", "pci"],
+                autonomy_level="human_in_loop",
+                existing_vendor="Buró de crédito",
+                notes="Archivos: POL-IA-Credito-Consumo.pdf",
+            ),
+            status="draft",
+            created_at=datetime(2025, 1, 1),
+            updated_at=datetime(2025, 1, 1),
+        )
+        svc = AIService.__new__(AIService)
+        prompt = svc._assemble_prompt(
+            system_prompt="System.",
+            project=project,
+            thread_messages=[],
+            reasoning_traces=[],
+            chunks=[],
+            doc_metadata={},
+            user_query="¿Qué evidencias debo generar según ISO 42001 y NIST?",
+        )
+        assert "OBLIGATORIO mencionar explícitamente" in prompt
+        assert "Buró de crédito" in prompt
+        assert "POL-IA-Credito-Consumo.pdf" in prompt
+        assert "human_in_loop" in prompt
+        assert "CONTEXTO DEL PROYECTO" in prompt
+
+    def test_non_evidence_query_omits_checklist_hint(self):
+        from app.domain.ai_service import AIService
+
+        svc = AIService.__new__(AIService)
+        prompt = svc._assemble_prompt(
+            system_prompt="System.",
+            project=None,
+            thread_messages=[],
+            reasoning_traces=[],
+            chunks=[],
+            doc_metadata={},
+            user_query="¿Qué es ISO 42001?",
+        )
+        assert "OBLIGATORIO mencionar explícitamente" not in prompt

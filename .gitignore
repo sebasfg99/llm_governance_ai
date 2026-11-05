@@ -1,58 +1,84 @@
 # ============================================================
-# .gitignore — Files and directories excluded from git
+# .gitignore — No subir secretos, datos locales ni artefactos
 # ============================================================
 
-# --- Secrets and environment config (NEVER commit these) ---
+# --- Secrets and environment (NEVER commit) ---
 .env
+.env.*
+!.env.example
 *.env.local
+*.pem
+*.key
+credentials.json
+secrets/
 
-# --- Uploaded documents (private tenant data) ---
+# --- Local documentation and private corpus (not for public repo) ---
+docs/
+
+# --- Uploaded documents (tenant data) ---
 uploads/*
 !uploads/.gitkeep
 
-# --- Admin seed documents ---
-# The regulatory corpus (docs/admin/**) is now versioned in this private
-# repo so seed_documents.py works right after clone. If this repo ever
-# becomes public, revisit licensing before keeping these tracked.
-
-# --- Python cache files ---
+# --- Python ---
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
 .Python
+*.so
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+dmypy.json
 
 # --- Virtual environments ---
-venv/
 .venv/
+venv/
 env/
 ENV/
+.python-version
 
-# --- pytest cache ---
+# --- Testing / coverage ---
 .pytest_cache/
 .coverage
+.coverage.*
 htmlcov/
+.tox/
+.nox/
 
-# --- Jupyter notebook checkpoints ---
+# --- Jupyter ---
 .ipynb_checkpoints/
 notebooks/.ipynb_checkpoints/
 
-# --- Build artifacts ---
+# --- Build / packaging ---
 *.egg-info/
+.eggs/
 dist/
 build/
+*.egg
 
-# --- IDE files ---
+# --- Logs and local databases ---
+*.log
+logs/
+*.sqlite
+*.sqlite3
+
+# --- IDE / editor ---
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
-# --- macOS files ---
+# --- OS ---
 .DS_Store
+Thumbs.db
 
-# --- Fine-tuning export files (may contain sensitive data) ---
+# --- Cursor / local agent artifacts ---
+.cursor/
+
+# --- Exports that may contain prompts or PII ---
 *.jsonl
 
-# --- Docker volumes (if using local bind mounts) ---
+# --- Docker local volumes ---
 postgres_data/

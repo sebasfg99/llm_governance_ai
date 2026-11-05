@@ -1,138 +1,166 @@
-# ai-core — Motor de IA para Gobernanza de Proyectos de IA
+# ai-core — Portfolio demo: regulatory RAG
 
-> Plataforma RAG construida con **FastAPI + OpenAI + Supabase (pgvector) + Docker**
-> que combina un asistente conversacional con flujos estructurados de gestión de
-> riesgos, políticas y controles para proyectos de Inteligencia Artificial.
+> **RAG** (*Retrieval-Augmented Generation*) for AI governance — **FastAPI + OpenAI + Supabase (pgvector)**.  
+> Portfolio repo: minimal HTTP surface (`/health`, `/ai/query`); full domain logic lives under `app/domain/`.
 
----
-
-## Tabla de contenidos
-
-- [Descripción del proyecto](#descripción-del-proyecto)
-- [Problema que resuelve](#problema-que-resuelve)
-- [¿Qué es RAG? Explicación simple](#qué-es-rag-explicación-simple)
-- [Stack tecnológico](#stack-tecnológico)
-- [Arquitectura general](#arquitectura-general)
-- [Guías de setup del RAG](#guías-de-setup-del-rag)
-- [Quickstart paso a paso](#quickstart-paso-a-paso)
-- [Cómo correr con Docker](#cómo-correr-con-docker)
-- [Ejemplo de uso del API](#ejemplo-de-uso-del-api)
-- [Estructura del proyecto (resumen)](#estructura-del-proyecto-resumen)
-- [Documentación detallada (`/docs`)](#documentación-detallada-docs)
+**Español:** [`README.es.md`](README.es.md).
 
 ---
 
-## Descripción del proyecto
+## Table of contents
 
-`ai-core` es un **motor de IA centralizado** para aplicaciones SaaS multi-tenant
-enfocado en la **gobernanza de proyectos de Inteligencia Artificial**. Expone una
-API REST (FastAPI) que ofrece:
-
-1. **Ingesta documental** (PDF, DOCX, TXT) con tagging por país y por marco
-   normativo (ISO 42001, NIST AI RMF, OWASP LLM Top 10, GDPR, EU AI Act,
-   MITRE ATLAS, PCI, etc.).
-2. **Búsqueda semántica (RAG)** sobre la base de conocimiento, con filtros por
-   tenant, país y framework.
-3. **Asistente conversacional** con memoria multi-capa (sesión, proyecto,
-   razonamiento previo).
-4. **Orquestadores estructurados** para riesgo, generación de políticas y
-   generación de controles.
-5. **Trazabilidad completa**: cada llamada al LLM se registra para auditoría,
-   evaluación y fine-tuning posterior.
-6. **Guardrails** anti-inyección de prompts y reglas de seguridad obligatorias.
-
-Toda la lógica vive bajo el principio de **un único motor por tenant**: los
-documentos, conversaciones y proyectos están aislados a nivel de aplicación
-(`tenant_id`) y la biblioteca normativa global (`tenant_id="global"`) es
-compartida por todos.
+- [About this repository (portfolio)](#about-this-repository-portfolio)
+- [Project description](#project-description)
+- [Problem context](#problem-context)
+- [What is RAG?](#what-is-rag-a-simple-explanation)
+- [Tech stack](#tech-stack)
+- [Architecture overview](#architecture-overview)
+- [Quickstart](#quickstart-step-by-step)
+- [Quick demo (portfolio)](#quick-demo-portfolio)
+- [Running with Docker](#running-with-docker)
+- [API usage example](#api-usage-example)
+- [Project structure (summary)](#project-structure-summary)
+- [Extended documentation (`docs/`)](#extended-documentation-docs)
+- [License](#license)
+- [Credits](#credits)
 
 ---
 
-## Problema que resuelve
+## About this repository (portfolio)
 
-Implementar un **Sistema de Gestión de IA** alineado con marcos como ISO/IEC
-42001 y NIST AI RMF normalmente exige:
+This project is part of my **professional portfolio**. The goal is not to ship a commercial product, but to **demonstrate that I can design and implement RAG systems** in a demanding domain: **AI regulation and governance** (e.g. ISO/IEC 42001).
 
-- Leer y entender cientos de páginas de normativa.
-- Identificar qué controles aplican a cada proyecto de IA.
-- Documentar riesgos, políticas y controles con trazabilidad regulatoria.
-- Mantener todo actualizado conforme cambian las leyes (EU AI Act, leyes
-  locales de protección de datos, etc.).
+### Language of the project
 
-`ai-core` resuelve esto convirtiendo la normativa en **conocimiento consultable
-por LLM con citas verificables**, y guiando al equipo a través de flujos
-estructurados (intake de proyecto → análisis de riesgos → política → controles)
-que el modelo puede justificar después con evidencia documental.
+The **default README is in English** (this file). A full **[Spanish README](README.es.md)** is available for local readers.
 
-> **En una frase:** convierte documentos regulatorios estáticos en un copiloto
-> de gobernanza de IA con memoria, citas y workflows guiados.
+The **demo notebook** and **sample queries** are mostly in **Spanish** because **most documents used to feed the RAG pipeline** (regulatory PDFs, regional context, etc.) are in Spanish. Backend code follows usual **English** conventions (module names, API fields). Embeddings are multilingual (`text-embedding-3-small`), but the portfolio demo is **Spanish-first** for questions and answers to match the seeded corpus.
+
+### Purpose
+
+Demonstrate:
+
+- **End-to-end RAG**: chunking, embeddings, vector search (pgvector), context assembly, LLM generation.
+- **Demo-ready API**: FastAPI, `POST /ai/query` contract, `.env` configuration, clear errors when an external provider fails.
+- **Layered engineering**: `api` → `domain` → `db`, `tenant_id` isolation, guardrails and traces in the backend.
+
+The **active HTTP surface** is trimmed for the demo: `GET /health` and `POST /ai/query` (see [`app/main.py`](app/main.py)). Additional modules (documents, risk, policies, evals, etc.) remain in the codebase as **design evidence**; you do not need them in Swagger to evaluate the demo.
+
+### How to read this repository
+
+| Goal | Start here |
+|------|------------|
+| **Run the demo quickly** | [Quick demo (portfolio)](#quick-demo-portfolio) and [`notebooks/ai_query_test.ipynb`](notebooks/ai_query_test.ipynb) |
+| **Follow one question through the stack** | [`app/api/routes/ai.py`](app/api/routes/ai.py) → [`app/domain/ai_service.py`](app/domain/ai_service.py) → [`app/domain/retrieval/service.py`](app/domain/retrieval/service.py) → [`app/domain/llm/`](app/domain/llm/) |
+| **HTTP contract** | [`app/schemas/ai.py`](app/schemas/ai.py) |
+| **Secrets and config** | [`.env.example`](.env.example) (never commit `.env`; see [`.gitignore`](.gitignore)) |
+| **Seed corpus and prompts** | [`scripts/seed_prompts.py`](scripts/seed_prompts.py), [`scripts/seed_documents.py`](scripts/seed_documents.py) |
+| **Central endpoint tests** | [`app/tests/test_ai.py`](app/tests/test_ai.py) |
+
+**Quick review:** start the API, run the notebook or Swagger with ISO 42001 questions (Spanish sample queries). **Deep review:** explore `app/domain/` and migrations under `app/db/migrations/`.
+
+### What this shows about RAG
+
+1. The user query is **embedded**; chunks are retrieved with filters (tenant, country, framework).
+2. Chunks are injected into the **prompt** with versioned system prompts.
+3. The LLM answers **grounded in retrieved context**, not parametric knowledge alone.
+4. The backend supports **traces and evaluation**; the portfolio notebook prints only `response_text`.
+
+### Honest limitations
+
+- Stub auth in development (`Authorization: Bearer dev-token`).
+- `.env`, local `docs/` (corpus), and `.venv` are **not published** (`.gitignore`).
+- **Local demo** only: requires Supabase + OpenAI; not a hosted SaaS.
+
+> **In one line:** a **regulated RAG** case study — run the demo, then dig into `app/domain/` if you care about architecture.
 
 ---
 
-## ¿Qué es RAG? Explicación simple
+## Project description
 
-**RAG** (*Retrieval-Augmented Generation*) es la técnica que combina **búsqueda
-semántica** con **generación de texto por LLM**. La idea base:
+`ai-core` is a **centralized AI engine** for multi-tenant SaaS applications focused on **governance of AI projects**. The codebase includes:
 
-1. **Indexación previa.** Cada documento se trocea en *chunks*, cada chunk se
-   convierte en un vector numérico (*embedding*) que captura su significado, y
-   se guarda en una base vectorial.
-2. **Recuperación.** Cuando el usuario pregunta algo, su consulta también se
-   convierte en vector y se buscan los chunks más cercanos por similitud
-   coseno.
-3. **Generación.** Esos chunks se inyectan al prompt del LLM como contexto, y
-   el LLM responde **basándose en ese contexto**, no en su memoria de
-   entrenamiento.
+1. **Document ingestion** (PDF, DOCX, TXT) with country and framework tagging (ISO 42001, NIST AI RMF, OWASP LLM Top 10, GDPR, EU AI Act, MITRE ATLAS, PCI, etc.).
+2. **Semantic search (RAG)** over the knowledge base with tenant, country, and framework filters.
+3. **Conversational assistant** with multi-layer memory (session, project, prior reasoning).
+4. **Structured orchestrators** for risk, policy generation, and controls.
+5. **Full traceability**: each LLM call is logged for audit, evaluation, and fine-tuning.
+6. **Guardrails** against prompt injection and mandatory safety rules.
+
+Everything follows **one engine per tenant**: documents, conversations, and projects are isolated at the application layer (`tenant_id`); the global normative library (`tenant_id="global"`) is shared.
+
+---
+
+## Problem context
+
+Building an **AI management system** aligned with ISO/IEC 42001 and NIST AI RMF typically requires:
+
+- Reading and understanding hundreds of pages of regulation.
+- Identifying which controls apply to each AI project.
+- Documenting risks, policies, and controls with regulatory traceability.
+- Keeping everything updated as laws change (EU AI Act, local data-protection laws, etc.).
+
+`ai-core` addresses this by turning regulation into **LLM-queryable knowledge with verifiable citations**, and by supporting structured flows (project intake → risk analysis → policy → controls) that the model can justify with document evidence.
+
+> **In one sentence:** turn static regulatory documents into an AI governance copilot with memory, citations, and guided workflows.
+
+---
+
+## What is RAG? A simple explanation
+
+**RAG** (*Retrieval-Augmented Generation*) combines **semantic search** with **LLM text generation**:
+
+1. **Indexing.** Documents are split into *chunks*; each chunk becomes a numeric *embedding* stored in a vector database.
+2. **Retrieval.** The user question is embedded; the closest chunks are found by cosine similarity.
+3. **Generation.** Those chunks are injected into the LLM prompt; the model answers **from that context**, not only from training memory.
 
 ```mermaid
 flowchart LR
-    Q[Pregunta del usuario] --> E1[Embedding de la pregunta]
-    E1 --> S[Búsqueda vectorial<br/>pgvector]
+    Q[User question] --> E1[Query embedding]
+    E1 --> S[Vector search<br/>pgvector]
     DB[(document_chunks<br/>+ embeddings)] --> S
-    S --> C[Top-k chunks relevantes]
-    C --> P[Prompt:<br/>system + contexto + pregunta]
+    S --> C[Top-k relevant chunks]
+    C --> P[Prompt:<br/>system + context + question]
     P --> LLM[OpenAI / Gemini]
-    LLM --> R[Respuesta con citas]
+    LLM --> R[Answer with citations]
 ```
 
-**¿Por qué importa?** Sin RAG, un LLM solo sabe lo que aprendió durante su
-entrenamiento. Con RAG puede contestar sobre **tus** documentos, **tus**
-políticas y **tu** normativa, citando las fuentes exactas.
+**Why it matters:** without RAG, an LLM only knows its training data. With RAG it can answer about **your** documents, **your** policies, and **your** regulations, citing exact sources.
 
-Detalles completos del pipeline en [`docs/rag/full_pipeline.md`](docs/rag/full_pipeline.md).
+Full pipeline details (local clones with `docs/`): `docs/rag/full_pipeline.md`.
 
 ---
 
-## Stack tecnológico
+## Tech stack
 
-| Capa | Tecnología | Por qué |
-|---|---|---|
-| **API** | FastAPI 0.111+ | Async-ready, validación con Pydantic, OpenAPI auto-generado |
-| **LLM** | OpenAI (GPT-4o / GPT-4o-mini) | Calidad y latencia óptimas para Q&A regulatorio |
-| **LLM alternativo** | Google Gemini (1.5 / 2.0) | Provider de respaldo intercambiable vía router |
-| **Embeddings** | OpenAI `text-embedding-3-small` (1536 dims) | Costo bajo, calidad suficiente para multi-idioma |
-| **Vector store** | Supabase + `pgvector` (ivfflat, cosine) | Postgres administrado, no hace falta una vector DB aparte |
-| **Persistencia** | Supabase (PostgreSQL 16) | Auth + Storage + DB en un solo backend |
-| **Configuración** | Pydantic Settings + `.env` | Tipado fuerte, validación al arranque |
-| **Containerización** | Docker (multi-stage) + docker-compose | Imagen reproducible y Postgres local con pgvector |
-| **Testing** | pytest + pytest-asyncio + httpx TestClient | Tests unitarios + integración end-to-end |
-| **Parsing** | pypdf, python-docx, pytesseract (fallback OCR) | Cubre los formatos más comunes |
+| Layer | Technology | Why |
+|-------|------------|-----|
+| **API** | FastAPI 0.111+ | Async-ready, Pydantic validation, auto OpenAPI |
+| **LLM** | OpenAI (GPT-4o / GPT-4o-mini) | Quality and latency for regulatory Q&A |
+| **Alternate LLM** | Google Gemini (1.5 / 2.0) | Swappable backup via router |
+| **Embeddings** | OpenAI `text-embedding-3-small` (1536 dims) | Low cost, multilingual |
+| **Vector store** | Supabase + `pgvector` (ivfflat, cosine) | Managed Postgres, no separate vector DB |
+| **Persistence** | Supabase (PostgreSQL 16) | Auth + storage + DB |
+| **Configuration** | Pydantic Settings + `.env` | Typed config, fail-fast at startup |
+| **Containers** | Docker (multi-stage) + docker-compose | Reproducible image, local pgvector |
+| **Testing** | pytest + pytest-asyncio + httpx TestClient | Unit and integration tests |
+| **Parsing** | pypdf, python-docx, pytesseract (OCR fallback) | Common document formats |
 
-> **Nota sobre runtime:** Python 3.11. La imagen Docker es `python:3.11-slim`.
+> **Runtime:** Python 3.11. Docker image: `python:3.11-slim`.
 
 ---
 
-## Arquitectura general
+## Architecture overview
 
 ```mermaid
 flowchart TB
-    subgraph Client["Cliente (Web / Mobile / Backend)"]
-        UI[UI o backend integrador]
+    subgraph Client["Client (Web / Mobile / Backend)"]
+        UI[UI or integrator]
     end
 
     subgraph API["FastAPI — ai-core"]
-        ROUTES[API Routes<br/>/ai /documents /risk /policies /threads /projects]
-        AISVC[AIService<br/>orquestador central]
+        ROUTES["Demo routes<br/>/health /ai/query"]
+        AISVC[AIService<br/>central orchestrator]
         RAG[RetrievalService]
         LLM[LLMRouter]
         GUARD[Guardrails]
@@ -140,7 +168,7 @@ flowchart TB
         EVAL[EvalService]
     end
 
-    subgraph External["Servicios externos"]
+    subgraph External["External services"]
         OAI[OpenAI API<br/>chat + embeddings]
         GEM[Google Gemini]
     end
@@ -170,32 +198,23 @@ flowchart TB
     TRACE --> TR
 ```
 
----
-
-## Guías de setup del RAG
-
-Guías detalladas paso a paso (para dev nuevo) para poner el RAG a correr desde cero:
-
-| Guía | Cuándo usarla |
-|---|---|
-| [`docs/SETUP_RAG_SIDECAR.md`](docs/SETUP_RAG_SIDECAR.md) | Correr **solo el motor RAG** aislado: Docker + Postgres/pgvector local, migraciones, seeds, y probar con `curl`. Sin UI ni ngrok. |
-| [`docs/SETUP_RAG_FULL_STACK.md`](docs/SETUP_RAG_FULL_STACK.md) | Probar el RAG **desde la UI de GovAI**: frontend + sidecar local + Supabase Cloud + ngrok/Railway. |
+Additional domain modules (documents, risk, policies, …) exist in code but are **not mounted** in the portfolio [`app/main.py`](app/main.py).
 
 ---
 
-## Quickstart paso a paso
+## Quickstart (step by step)
 
-### 1. Pre-requisitos
+### 1. Prerequisites
 
 - **Python 3.11**
-- **Cuenta de Supabase** (https://supabase.com) con un proyecto creado
-- **OpenAI API Key** (https://platform.openai.com/api-keys)
-- **Docker** (opcional, para Postgres local con pgvector)
+- **Supabase account** (https://supabase.com) with a project
+- **OpenAI API key** (https://platform.openai.com/api-keys)
+- **Docker** (optional, for local Postgres with pgvector)
 
-### 2. Clonar e instalar dependencias
+### 2. Clone and install
 
 ```bash
-git clone <url-del-repo> llm_ai_governance_project
+git clone <repo-url> llm_ai_governance_project
 cd llm_ai_governance_project
 
 python3.11 -m venv .venv
@@ -204,85 +223,63 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### 3. Configurar variables de entorno
+### 3. Environment variables
 
 ```bash
 cp .env.example .env
 ```
 
-Edita `.env` y rellena los valores. **Nunca subas este archivo a git.**
+Edit `.env`. **Never commit this file.**
 
 ```env
-# Supabase
-SUPABASE_URL=https://tu-proyecto.supabase.co
+SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_KEY=YOUR_SUPABASE_SERVICE_KEY
-
-# OpenAI
 OPENAI_API_KEY=YOUR_OPENAI_API_KEY
-
-# (Opcional) Gemini
 GEMINI_API_KEY=YOUR_GEMINI_API_KEY
-
-# Router por defecto
 LLM_DEFAULT_PROVIDER=openai
 LLM_DEFAULT_MODEL=gpt-4o-mini
 EMBEDDING_MODEL=text-embedding-3-small
 ```
 
-> **Importante:** `SUPABASE_SERVICE_KEY` es la *service role key* — tiene
-> acceso completo a la base de datos y **omite Row Level Security**. Nunca la
-> expongas en el frontend.
+> **Important:** `SUPABASE_SERVICE_KEY` is the *service role* key — full DB access, bypasses RLS. Never expose it in a browser.
 
-### 4. Crear el esquema en Supabase
+If your shell exports `OPENAI_API_KEY`, run `unset OPENAI_API_KEY` so the app reads `.env`.
 
-Desde el SQL Editor de Supabase, ejecuta en orden:
+### 4. Supabase schema
 
-1. `app/db/migrations/001_initial.sql` — tablas base + pgvector
-2. `app/db/migrations/002_add_country.sql` — soporte de país
-3. `app/db/migrations/003_fix_ivfflat_probes.sql` — ajustes de índice
-4. `app/db/migrations/004_projects_memory_framework.sql` — proyectos, threads,
-   filtro por framework
-5. `app/db/migrations/005_section_ref_hnsw.sql` — citas por sección + HNSW
-6. `app/db/migrations/006_rag_governance.sql` — retrieval híbrido y métricas
-7. `app/db/migrations/007_fix_hybrid_rpc_types.sql` — corrección de tipos RPC
-8. `app/db/migrations/008_industry_codes.sql` — filtros por industria
+Run in the Supabase SQL Editor, in order:
 
-> Si tu proyecto Supabase muestra el aviso *“New tables will not have Row Level
-> Security enabled”*, en desarrollo puedes hacer click en **Run anyway**. Para
-> producción ver [`docs/decisions/tradeoffs.md`](docs/decisions/tradeoffs.md).
+1. `app/db/migrations/001_initial.sql` — base tables + pgvector  
+2. `app/db/migrations/002_add_country.sql` — country support  
+3. `app/db/migrations/003_fix_ivfflat_probes.sql` — index tuning  
+4. `app/db/migrations/004_projects_memory_framework.sql` — projects, threads, framework filter  
 
-### 5. Sembrar prompts y documentos normativos
+### 5. Seed prompts and documents
 
 ```bash
-# Carga los system prompts versionados (chatbot, risk_intake, policy, etc.)
 PYTHONPATH=. python scripts/seed_prompts.py
-
-# Carga los documentos normativos desde docs/admin/<Framework>/<País>/...
 PYTHONPATH=. python scripts/seed_documents.py
 ```
 
-`seed_documents.py` es **idempotente**: documentos `ready` se omiten salvo que
-pases `--force`.
+`seed_documents.py` loads from local `docs/admin/<Framework>/<Country>/...` (folder is gitignored). It is **idempotent** unless you pass `--force`.
 
-### 6. Levantar el servidor
+### 6. Start the server
 
 ```bash
 uvicorn app.main:app --reload
 ```
 
-- API base: `http://localhost:8000`
-- Swagger UI: `http://localhost:8000/docs`
-- Redoc: `http://localhost:8000/redoc`
+- API: `http://localhost:8000`  
+- Swagger: `http://localhost:8000/docs`  
 
-### 7. Probar el endpoint principal
+Keep this terminal open while running the notebook.
+
+### 7. Test the main endpoint
 
 ```bash
-KEY=$(grep '^AI_CORE_SERVICE_KEY=' .env | cut -d= -f2-)
 curl -X POST http://localhost:8000/ai/query \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $KEY" \
-  -H "X-Tenant-Id: dev-tenant" \
-  -H "X-User-Id: dev-user" \
+  -H "Authorization: Bearer dev-token" \
   -d '{
     "query": "¿Qué requiere ISO 42001 sobre el comité de gobernanza de IA?",
     "use_case": "chatbot",
@@ -290,113 +287,86 @@ curl -X POST http://localhost:8000/ai/query \
   }'
 ```
 
-> `Bearer dev-token` ya no funciona. La alternativa es enviar un JWT válido de
-> Supabase. Ver [`docs/api/integration_guide.md`](docs/api/integration_guide.md#autenticación).
+Sample query is in Spanish to match the corpus. Any token works in development (auth is stubbed).
 
 ---
 
-## Cómo correr con Docker
+## Quick demo (portfolio)
 
-### Opción A — Solo Postgres con pgvector (recomendado para desarrollo)
+Minimal HTTP surface: **`GET /health`** and **`POST /ai/query`** only.
+
+1. **`.env`** — valid Supabase + `OPENAI_API_KEY`.  
+2. **Seeds** — quickstart steps 4–5.  
+3. **Server** — `uvicorn app.main:app --reload`.  
+4. **Try it** — [`notebooks/ai_query_test.ipynb`](notebooks/ai_query_test.ipynb) (five ISO 42001 questions, prints `response_text` only) **or** Swagger.
+
+Example body (**do not** send Swagger placeholder `thread_id` / `project_id` UUIDs):
+
+```json
+{
+  "query": "¿Qué es ISO/IEC 42001 y para qué sirve?",
+  "use_case": "chatbot",
+  "framework_filter": ["iso_42001"],
+  "country": "costa-rica",
+  "include_global": true
+}
+```
+
+Header: `Authorization: Bearer dev-token`.
+
+---
+
+## Running with Docker
+
+### Option A — Postgres with pgvector only (local dev)
 
 ```bash
 docker compose up -d postgres
 ```
 
-Esto levanta `pgvector/pgvector:pg16` en `localhost:5432` para inspeccionar el
-esquema y ejecutar SQL. El sidecar usa el cliente REST/RPC de Supabase, así que
-para un pipeline local end-to-end necesitás `supabase start`, no solo este
-contenedor.
+Runs `pgvector/pgvector:pg16` on `localhost:5432`.
 
-### Opción B — App completa en contenedor
-
-Construye la imagen multi-stage:
+### Option B — Full app in a container
 
 ```bash
 docker build -t aicore .
-```
-
-Y córrela montando tu `.env`:
-
-```bash
 docker run -p 8000:8000 --env-file .env aicore
 ```
 
-La imagen final pesa poco porque el `Dockerfile` usa **multi-stage build**
-(stage `builder` con dependencias + stage `runtime` mínimo).
-
-Detalles completos en [`docs/docker_deployment.md`](docs/docker_deployment.md).
+Multi-stage `Dockerfile` (builder + minimal runtime). Details in local `docs/docker_deployment.md` if present.
 
 ---
 
-## Ejemplo de uso del API
+## API usage example
 
-### Subir un documento
+Portfolio **`main.py`** exposes only `/ai/query`. Document upload routes live under `app/api/routes/documents.py` but are not registered in the demo app.
 
-```bash
-curl -X POST http://localhost:8000/documents/upload \
-  -H "Authorization: Bearer $KEY" \
-  -H "X-Tenant-Id: dev-tenant" \
-  -H "X-User-Id: dev-user" \
-  -F "file=@./mi_politica.pdf" \
-  -F "country=costa-rica"
-```
-
-Respuesta:
-
-```json
-{
-  "id": "8f2c...",
-  "filename": "mi_politica.pdf",
-  "status": "pending",
-  "country": "costa-rica"
-}
-```
-
-### Procesarlo (parse + chunk + embed)
-
-```bash
-curl -X POST http://localhost:8000/documents/8f2c.../process \
-  -H "Authorization: Bearer $KEY" \
-  -H "X-Tenant-Id: dev-tenant" \
-  -H "X-User-Id: dev-user"
-```
-
-### Hacer una consulta RAG
+### RAG query (Python)
 
 ```python
-import os
 import requests
-from dotenv import load_dotenv
-
-load_dotenv()
 
 resp = requests.post(
     "http://localhost:8000/ai/query",
-    headers={
-        "Authorization": f"Bearer {os.environ['AI_CORE_SERVICE_KEY']}",
-        "X-Tenant-Id": "dev-tenant",
-        "X-User-Id": "dev-user",
-    },
+    headers={"Authorization": "Bearer dev-token"},
     json={
         "query": "¿Qué controles ISO 42001 aplican a un sistema generativo público?",
         "use_case": "chatbot",
         "framework_filter": ["iso_42001"],
         "top_k": 5,
-        "response_mode": "structured",
+        "response_mode": "text",
     },
+    timeout=120,
 ).json()
 
 print(resp["response_text"])
-print("Trace:", resp["trace_id"])
-print("Chunks usados:", resp["retrieved_chunk_count"])
 ```
 
-Respuesta abreviada:
+Abbreviated response shape:
 
 ```json
 {
-  "response_text": "{ \"answer\": \"...\", \"citations\": [...], \"confidence\": \"high\" }",
+  "response_text": "...",
   "trace_id": "1d4a...",
   "thread_id": "9b81...",
   "model_provider": "openai",
@@ -404,99 +374,61 @@ Respuesta abreviada:
   "latency_ms": 1840,
   "use_case": "chatbot",
   "retrieved_chunk_count": 5,
-  "retrieved_chunks": [
-    { "chunk_id": "...", "document_id": "...", "similarity": 0.876, "content_preview": "..." }
-  ],
-  "used_reasoning_memory": false
+  "retrieved_chunks": []
 }
 ```
 
-Ver el catálogo completo en [`docs/api/`](docs/api/) y la guía de integración
-en [`docs/api/integration_guide.md`](docs/api/integration_guide.md).
+Extended API docs (local `docs/api/`) describe the full engine when all routers are enabled.
 
 ---
 
-## Estructura del proyecto (resumen)
+## Project structure (summary)
 
 ```
 llm_ai_governance_project/
 ├── app/
-│   ├── main.py                  # Punto de entrada FastAPI
-│   ├── core/                    # config, security, errors, logging
-│   ├── api/
-│   │   ├── deps.py              # Inyección de dependencias (auth, db)
-│   │   └── routes/              # 9 routers: ai, documents, risk, policies...
-│   ├── domain/                  # Lógica de negocio por dominio
-│   │   ├── ai_service.py        # Orquestador central
-│   │   ├── retrieval/           # RAG: embeddings + búsqueda + ranking
-│   │   ├── documents/           # Ingesta, parsing, chunking
-│   │   ├── llm/                 # Router OpenAI/Gemini + guardrails
-│   │   ├── projects/            # Memoria L2 (expediente del proyecto)
-│   │   ├── threads/             # Memoria L1 (conversación)
-│   │   ├── risk/                # Orquestador de análisis de riesgo
-│   │   ├── policies/            # Orquestador de políticas + controles
-│   │   ├── prompts/             # Biblioteca de system prompts versionados
-│   │   ├── traces/              # Auditoría de cada llamada al LLM
-│   │   └── evals/               # Evaluación heurística automática
-│   ├── schemas/                 # Pydantic schemas de la API
-│   ├── db/
-│   │   ├── supabase.py          # Cliente singleton
-│   │   └── migrations/          # SQL versionados (001..004)
-│   └── tests/                   # pytest
-├── scripts/
-│   ├── seed_documents.py        # Carga masiva docs/admin/
-│   ├── seed_prompts.py          # Carga prompts versionados
-│   ├── backfill_embeddings.py   # Re-genera embeddings
-│   └── export_finetune_data.py  # Exporta dataset desde traces
-├── docs/
-│   ├── admin/                   # Corpus normativo (no commiteable)
-│   ├── api/                     # Documentación de endpoints
-│   ├── rag/                     # Pipeline RAG en profundidad
-│   ├── decisions/               # ADRs y trade-offs
-│   ├── docker_deployment.md
-│   ├── testing.md
-│   └── project_structure.md
+│   ├── main.py                  # FastAPI entry (demo: health + ai only)
+│   ├── core/
+│   ├── api/routes/
+│   ├── domain/                  # ai_service, retrieval, documents, llm, …
+│   ├── schemas/
+│   ├── db/migrations/
+│   └── tests/
+├── scripts/                     # seed_*, eval, export
+├── docs/                        # gitignored (local corpus + guides)
 ├── notebooks/
-│   └── finetune_dataset_builder.ipynb
-├── Dockerfile                   # Multi-stage: builder + runtime
-├── docker-compose.yml           # Postgres + pgvector local
+│   └── ai_query_test.ipynb
+├── README.md                    # English (default) ← you are here
+├── README.es.md                 # Spanish
+├── Dockerfile
+├── docker-compose.yml
 ├── requirements.txt
-├── .env.example
-└── README.md                    # ← estás aquí
+└── .env.example
 ```
 
-Detalle completo carpeta por carpeta en
-[`docs/project_structure.md`](docs/project_structure.md).
+If you have a local `docs/` folder, see `docs/project_structure.md` (not published to the remote).
 
 ---
 
-## Documentación detallada (`/docs`)
+## Extended documentation (`docs/`)
 
-| Archivo | Contenido |
-|---|---|
-| [`docs/SETUP_RAG_SIDECAR.md`](docs/SETUP_RAG_SIDECAR.md) | Setup paso a paso del RAG aislado (Docker, migraciones, seeds, prueba con curl) |
-| [`docs/SETUP_RAG_FULL_STACK.md`](docs/SETUP_RAG_FULL_STACK.md) | Setup del stack completo: UI + sidecar + Supabase Cloud + ngrok/Railway |
-| [`docs/PROMPT_INTEGRAR_AI_CORE_CUALQUIER_UI.md`](docs/PROMPT_INTEGRAR_AI_CORE_CUALQUIER_UI.md) | Prompt reutilizable para que un agente configure e integre `ai-core` de forma segura con cualquier UI |
-| [`docs/api/`](docs/api/) | Documentación por endpoint (request/response, ejemplos curl/Python/JS, errores) |
-| [`docs/api/integration_guide.md`](docs/api/integration_guide.md) | Guía paso a paso para integrar `ai-core` desde otro backend, frontend o chatbot |
-| [`docs/rag/full_pipeline.md`](docs/rag/full_pipeline.md) | Pipeline RAG en profundidad: ingesta → chunking → embeddings → retrieval → generación |
-| [`docs/testing.md`](docs/testing.md) | Cómo testear, cómo validar la calidad del retrieval, cómo debuggear malas respuestas / hallucinations |
-| [`docs/docker_deployment.md`](docs/docker_deployment.md) | Build, run, variables de entorno, escalabilidad |
-| [`docs/project_structure.md`](docs/project_structure.md) | Cada carpeta y archivo importante explicado |
-| [`docs/decisions/design_choices.md`](docs/decisions/design_choices.md) | Decisiones de arquitectura y por qué |
-| [`docs/decisions/tradeoffs.md`](docs/decisions/tradeoffs.md) | Compromisos asumidos, pros y contras, alternativas evaluadas |
+The `docs/` folder (corpus in `docs/admin/`, internal guides, ADRs) is in [`.gitignore`](.gitignore) and **is not part of the public repo**. For the demo, this README, the notebook, and `app/` are enough.
+
+| Path (local) | Content |
+|--------------|---------|
+| `docs/api/` | Per-endpoint documentation |
+| `docs/rag/full_pipeline.md` | Ingestion → chunking → embeddings → retrieval → generation |
+| `docs/testing.md` | Testing and debugging retrieval quality |
+| `docs/decisions/` | Architecture decisions and trade-offs |
 
 ---
 
-## Licencia
+## License
 
-Proyecto interno — uso restringido al equipo del proyecto académico /
-empresarial al que pertenece. Ver acuerdo correspondiente.
+Portfolio code — check the remote or contact the author for terms of use.
 
 ---
 
-## Créditos
+## Credits
 
-Diseñado y desarrollado como parte de un *capstone* de IA aplicada a la
-gobernanza, integrando ISO/IEC 42001, NIST AI RMF, OWASP GenAI, EU AI Act y
-MITRE ATLAS como base normativa.
+Portfolio project: RAG applied to AI governance, with ISO/IEC 42001 and related frameworks as normative context for the seeded corpus.
